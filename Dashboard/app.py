@@ -647,6 +647,14 @@ def with_ai_columns(df):
 def page_control_tower():
     header("Control Tower", f"{ENV.get('label', env_key)} · valuation date {SEL_DATE or '—'}")
     flash()
+    nav_chk = T("NAV_Runs")
+    if not nav_chk.empty and SEL_DATE:
+        day_chk = nav_chk[nav_chk["Date"] == SEL_DATE]
+        if (day_chk["Expected_Frozen_At"].astype(str).str.strip() == "").all():
+            st.info("This is a warm-up date: clean history used to estimate beta and the expected-NAV band. "
+                    "It is not checked by the rules, so it has no cases. "
+                    + ("Click 'Fetch & process latest trading day' below to run the first live day."
+                       if ENV_MODE == "live" else "Select a test date from the sidebar."))
     nav, funds, cases = T("NAV_Runs"), T("Funds"), T("Cases")
     day = nav[nav["Date"] == SEL_DATE].copy() if not nav.empty else nav
     if day.empty:
