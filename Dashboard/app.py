@@ -381,7 +381,7 @@ def evidence_panel(c, f):
         closed = cases[(cases["Date"] == d) & (cases["Case_Type"] == "EXCEPTION") &
                        cases["Fund_IDs"].astype(str).str.split(",").apply(lambda x: funds[0] in x if funds else False)]
         st.markdown("**Exception cases on this fund-day**")
-          if closed.empty:
+        if closed.empty:
             st.caption("None: clean fund-day (rule R02).")
         else:
             st.dataframe(closed[[x for x in ["Case_ID", "Root_Rule_ID", "Max_Severity", "Status", "Final_Recommendation"] if x in closed.columns]],
