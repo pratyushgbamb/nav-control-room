@@ -369,7 +369,8 @@ def mini_waterfall(r, height=300):
     levels = [p, p + m, p + m + inc, p + m + inc + fee, c]
     pad = max((max(levels) - min(levels)) * 0.4, p * 0.001)
     fig.update_yaxes(range=[min(levels) - pad, max(levels) + pad], title="₹ per unit")
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
+    style(fig, height)
+    fig.update_layout(showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -407,8 +408,8 @@ def evidence_panel(c, f):
                                          name=f"Source {src}", line=dict(color=color)))
             fig.add_trace(go.Scatter(x=h["Date"], y=numcol(h, "Selected_Price_Paise") / 100, mode="markers", name="Selected",
                                      marker=dict(symbol="diamond-open", size=13, color="#111827", line=dict(width=2))))
-            fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="₹ per share",
-                              legend=dict(orientation="h", y=1.15), title=f"{sec}: three sources, last {len(h)} days")
+            style(fig, 280, f"{sec}: three sources, last {len(h)} days")
+            fig.update_yaxes(title="₹ per share")
             st.plotly_chart(fig, use_container_width=True)
             today = h[h["Date"] == d]
             if not today.empty:
@@ -646,6 +647,16 @@ def with_ai_columns(df):
     df["AI_Band"] = df["Latest_AI_Call_ID"].map(lambda x: m.get(str(x), {}).get("Confidence_Band", ""))
     return df
 
+def case_icon(r):
+    s = str(r.get("Status", ""))
+    if s == "CLOSED":
+        return "🟢"
+    if s == "PENDING_CHECK":
+        return "🟣"
+    if s == "ESCALATED":
+        return "🟠"
+    return "🔴" if str(r.get("Max_Severity", "")) == "HARD" else "🟡"
+
 # ---------------------------------------------------------------------------- dashboard helpers (Control Tower v3.1)
 MATRIX_SCALE = [[0.0, "#15803d"], [0.25, "#15803d"], [0.25, "#1d4ed8"], [0.5, "#1d4ed8"],
                 [0.5, "#b45309"], [0.75, "#b45309"], [0.75, "#b91c1c"], [1.0, "#b91c1c"]]
@@ -852,28 +863,71 @@ def page_control_tower():
     body()
 
 def page_cases():
-    header("Case Workbench", "Maker view: evidence, AI recommendation and decision for each exception case")
     flash()
     cases = T("Cases")
     if cases.empty:
         st.info("No cases yet.")
         return
-    exc = cases[cases["Case_Type"] == "EXCEPTION"].copy()
-    c1, c2, c3, c4 = st.columns([1.2, 2, 1, 1.2])
-    scope = c1.radio("Dates", ["Selected date", "All dates"], horizontal=True)
-    statuses = c2.multiselect("Status", list(CASE_STATUS_COLOR), default=["NEW", "AI_DONE", "ESCALATED", "PENDING_CHECK"])
-    sev = c3.multiselect("Severity", ["HARD", "WARN"], default=["HARD", "WARN"])
-    fund = c4.selectbox("Fund", ["All"] + sorted(T("Funds")["Fund_ID"].tolist()) if not T("Funds").empty else ["All"])
-    if scope == "Selected date":
-        exc = exc[exc["Date"] == SEL_DATE]
-    exc = exc[exc["Status"].isin(statuses) & exc["Max_Severity"].isin(sev)]
-    if fund != "All":
-        exc = exc[exc["Fund_IDs"].astype(str).str.split(",").apply(lambda x: fund in x)]
-    exc = with_ai_columns(exc).sort_values(["Max_Severity", "Date"], ascending=[True, False]).reset_index(drop=True)
-    cols = [x for x in ["Case_ID", "Date", "Status", "Max_Severity", "Root_Rule_ID", "Fund_IDs", "Security_ID", "Est_NAV_Impact_bps",
-                        "AI_Class", "AI_Conf", "AI_Band", "Guardrail_Status"] if x in exc.columns]
-    select_and_render(exc, cols, "case_tbl")
+    exc_all = cases[cases["Case_Type"] == "EXCEPTION"].copy()
+    fids = sorted(T("Funds")["Fund_ID"].tolist()) if not T("Funds").empty else []
+    fb = st.columns([1.6, 3, 1.4, 1.2])
+    scope = fb[0].segmented_control("Dates", ["Selected date", "All dates"], default="Selected date") or "Selected date"
+    statuses = fb[1].multiselect("Status", list(CASE_STATUS_COLOR), default=["NEW", "AI_DONE", "ESCALATED", "PENDING_CHECK"])
+    sev = fb[2].multiselect("Severity", ["HARD", "WARN"], default=["HARD", "WARN"])
+    fund = fb[3].selectbox("Fund", ["All"] + fids)
 
+    base = exc_all[exc_all["Date"] == SEL_DATE] if scope == "Selected date" else exc_all
+    open_ = base[base["Status"] != "CLOSED"]
+    ok, n = ai_coverage(base)
+    created = pd.to_datetime(open_["Created_At"], errors="coerce") if not open_.empty else pd.Series(dtype="datetime64[ns]")
+    imp_open = numcol(open_, "Est_NAV_Impact_bps")
+    tiles([("Open cases", len(open_), f"{len(base)} in scope", "#d97706"),
+           ("HARD open", int((open_["Max_Severity"] == "HARD").sum()) if not open_.empty else 0, "block release", "#dc2626"),
+           ("Awaiting checker", int((base["Status"] == "PENDING_CHECK").sum()) if not base.empty else 0, "maker proposals", "#7c3aed"),
+           ("No AI result", n - ok, "decide from evidence (G4)", "#64748b"),
+           ("Oldest open", age_text(created.min()) if created.notna().any() else "—", "since case creation", "#0891b2"),
+           ("Largest impact", "—" if imp_open.dropna().empty else f"{imp_open.max():.1f} bps", "open cases", "#3b82f6")])
+
+    q = base[base["Status"].isin(statuses) & base["Max_Severity"].isin(sev)].copy()
+    if fund != "All" and not q.empty:
+        q = q[q["Fund_IDs"].astype(str).str.split(",").apply(lambda x: fund in x)]
+    left, right = st.columns([4, 6])
+    sel_id = None
+    with left:
+        st.markdown(f"**Queue** · {len(q)} case(s)")
+        if q.empty:
+            st.info("No cases match these filters.")
+        else:
+            q = with_ai_columns(q)
+            q["●"] = q.apply(case_icon, axis=1)
+            q["Impact"] = numcol(q, "Est_NAV_Impact_bps")
+            q["AI conf"] = pd.to_numeric(q["AI_Conf"], errors="coerce")
+            q["_hard_first"] = (q["Max_Severity"] != "HARD").astype(int)
+            q = q.sort_values(["_hard_first", "Impact"], ascending=[True, False]).reset_index(drop=True)
+            cols = ["●", "Case_ID"] + (["Date"] if scope == "All dates" else []) + \
+                   ["Root_Rule_ID", "Fund_IDs", "Security_ID", "Impact", "AI_Class", "AI conf", "Status"]
+            ev = st.dataframe(
+                q[cols], hide_index=True, use_container_width=True, height=560, on_select="rerun",
+                selection_mode="single-row", key="wb_tbl",
+                column_config={
+                    "●": st.column_config.TextColumn("", width="small"),
+                    "Case_ID": st.column_config.TextColumn("Case"),
+                    "Root_Rule_ID": st.column_config.TextColumn("Rule", width="small"),
+                    "Fund_IDs": st.column_config.TextColumn("Funds"),
+                    "Security_ID": st.column_config.TextColumn("Security"),
+                    "Impact": st.column_config.NumberColumn("Impact (bps)", format="%.1f"),
+                    "AI_Class": st.column_config.TextColumn("AI label"),
+                    "AI conf": st.column_config.ProgressColumn("AI conf.", min_value=0.0, max_value=1.0, format="%.2f"),
+                })
+            rows = ev.selection.rows if ev is not None and hasattr(ev, "selection") else []
+            sel_id = q.iloc[rows[0]]["Case_ID"] if rows else None
+            st.caption("🔴 HARD open · 🟡 WARN open · 🟠 escalated · 🟣 awaiting checker · 🟢 closed")
+    with right:
+        if sel_id:
+            render_case(sel_id)
+        else:
+            st.markdown('<div class="card">Select a case in the queue to open its evidence, AI recommendation and decision form.</div>',
+                        unsafe_allow_html=True)
 
 def page_checker():
     header("Checker Queue", "Second approval: a SENIOR other than the maker confirms or returns each proposal")
@@ -925,7 +979,7 @@ def page_release():
 
 
 def page_performance():
-    header("Fund Performance", "NAV history, risk and what drove each day's NAV move")
+    flash()
     nav, funds, cal = T("NAV_Runs"), T("Funds"), T("Calendar")
     if nav.empty:
         st.info("No NAV history yet.")
@@ -938,67 +992,94 @@ def page_performance():
         return
     ids = sorted(df["Fund_ID"].unique())
     names = dict(zip(funds["Fund_ID"], funds["Fund_Name"])) if not funds.empty else {}
-    c1, c2 = st.columns([3, 2])
+    betas = dict(zip(funds["Fund_ID"], funds["Beta"])) if (not funds.empty and "Beta" in funds) else {}
+
+    c1, c2, c3 = st.columns([4, 4, 2])
     d0, d1 = c1.select_slider("Period", options=dates, value=(dates[0], dates[-1]))
-    sel = c2.multiselect("Funds", ids, default=ids)
+    sel = c2.multiselect("Funds", ids, default=ids) or ids
+    one = c3.selectbox("Detail fund", sel)
     sub = df[(df["Date"] >= d0) & (df["Date"] <= d1) & df["Fund_ID"].isin(sel)]
     piv = sub.pivot_table(index="Date", columns="Fund_ID", values="NAV", aggfunc="last").sort_index()
-    reb = piv.apply(lambda s: s / s.dropna().iloc[0] * 100 if s.notna().any() else s)
-    fig = go.Figure()
-    for i, f in enumerate(reb.columns):
-        fig.add_trace(go.Scatter(x=reb.index, y=reb[f], name=f"{f} {names.get(f, '')}", line=dict(color=SERIES_COLORS[i % 6], width=2)))
-    nf = cal[(cal["Date"] >= d0) & (cal["Date"] <= d1)].sort_values("Date") if not cal.empty else cal
-    if not nf.empty:
-        nc = numcol(nf, "Nifty_Close")
-        fig.add_trace(go.Scatter(x=nf["Date"], y=nc / nc.dropna().iloc[0] * 100, name="Nifty 50", line=dict(color="#111827", dash="dash")))
-        test = cal[cal.get("Day_Role", pd.Series("", index=cal.index)) == "TEST"]["Date"]
-        if not test.empty and d0 <= test.min() <= d1:
-            fig.add_vline(x=test.min(), line_dash="dot", line_color="#94a3b8")
-            fig.add_annotation(x=test.min(), y=1, yref="paper", text="test window starts", showarrow=False, yanchor="bottom")
-    fig.update_layout(height=420, title="NAV rebased to 100", margin=dict(l=10, r=10, t=50, b=10), legend=dict(orientation="h", y=-0.15))
-    st.plotly_chart(fig, use_container_width=True)
-    betas = dict(zip(funds["Fund_ID"], funds["Beta"])) if not funds.empty and "Beta" in funds else {}
+
     rows = []
     for f in piv.columns:
         s = piv[f].dropna()
         if len(s) < 3:
             continue
         r = s.pct_change().dropna()
-        rows.append({"Fund": f, "Name": names.get(f, ""), "Period return %": round((s.iloc[-1] / s.iloc[0] - 1) * 100, 2),
-                     "Annualised volatility %": round(r.std(ddof=1) * np.sqrt(252) * 100, 2),
-                     "Max drawdown %": round((s / s.cummax() - 1).min() * 100, 2), "Beta (warm-up)": betas.get(f, ""), "Days": len(s)})
-    c1, c2 = st.columns([3, 2])
-    c1.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-    dd = piv.apply(lambda s: s / s.cummax() - 1) * 100
-    fdd = go.Figure([go.Scatter(x=dd.index, y=dd[f], name=f, line=dict(color=SERIES_COLORS[i % 6])) for i, f in enumerate(dd.columns)])
-    fdd.update_layout(height=260, title="Drawdown %", margin=dict(l=10, r=10, t=40, b=10), showlegend=False)
-    c2.plotly_chart(fdd, use_container_width=True)
-    one = st.selectbox("Fund for the detail charts", sel or ids)
+        rows.append({"Fund": f, "Name": names.get(f, ""), "Return %": round((s.iloc[-1] / s.iloc[0] - 1) * 100, 2),
+                     "Volatility %": round(r.std(ddof=1) * np.sqrt(252) * 100, 2),
+                     "Max drawdown %": round((s / s.cummax() - 1).min() * 100, 2),
+                     "Beta": num(betas.get(f)), "Days": len(s)})
+    stats = pd.DataFrame(rows)
+    n01 = int(sub["N01"].apply(truthy).sum()) if "N01" in sub else 0
+    brk = numcol(sub, "Admin_Break_bps")
+    if not stats.empty:
+        best, worst = stats.loc[stats["Return %"].idxmax()], stats.loc[stats["Return %"].idxmin()]
+        dd = stats.loc[stats["Max drawdown %"].idxmin()]
+        tiles([("Best fund", f"{best['Return %']:+.2f}%", f"{best['Fund']} · {d0} → {d1}", "#16a34a"),
+               ("Worst fund", f"{worst['Return %']:+.2f}%", worst["Fund"], "#dc2626"),
+               ("Avg volatility", f"{stats['Volatility %'].mean():.1f}%", "annualised", "#3b82f6"),
+               ("Worst drawdown", f"{dd['Max drawdown %']:.2f}%", dd["Fund"], "#d97706"),
+               ("Band breaches", n01, "fund-days outside expected band (N01)", "#0891b2"),
+               ("Avg admin break", "—" if brk.dropna().empty else f"{brk.mean():.1f} bps",
+                "—" if brk.dropna().empty else f"max {brk.max():.1f} bps", "#7c3aed")])
+
+    g1, g2 = st.columns([6, 4])
+    reb = piv.apply(lambda s: s / s.dropna().iloc[0] * 100 if s.notna().any() else s)
+    fr = go.Figure([go.Scatter(x=reb.index, y=reb[f], name=f, line=dict(color=SERIES_COLORS[i % 6], width=2))
+                    for i, f in enumerate(reb.columns)])
+    nf = cal[(cal["Date"] >= d0) & (cal["Date"] <= d1)].sort_values("Date") if not cal.empty else cal
+    if not nf.empty:
+        nc = numcol(nf, "Nifty_Close")
+        if nc.notna().any():
+            fr.add_trace(go.Scatter(x=nf["Date"], y=nc / nc.dropna().iloc[0] * 100, name="Nifty 50",
+                                    line=dict(color="#e5e7eb", dash="dash", width=1.5)))
+        test = cal.loc[cal.get("Day_Role", pd.Series("", index=cal.index)) == "TEST", "Date"]
+        if not test.empty and d0 <= test.min() <= d1:
+            fr.add_vline(x=test.min(), line_dash="dot", line_color="#94a3b8")
+            fr.add_annotation(x=test.min(), y=1, yref="paper", text="test window", showarrow=False, yanchor="bottom", font=dict(size=10))
+    g1.plotly_chart(style(fr, 330, "NAV rebased to 100 vs Nifty 50"), use_container_width=True, config={"displayModeBar": False})
+    ddf = piv.apply(lambda s: s / s.cummax() - 1) * 100
+    fd = go.Figure([go.Scatter(x=ddf.index, y=ddf[f], name=f, fill="tozeroy", line=dict(color=SERIES_COLORS[i % 6], width=1))
+                    for i, f in enumerate(ddf.columns)])
+    g2.plotly_chart(style(fd, 330, "Drawdown %"), use_container_width=True, config={"displayModeBar": False})
+
+    g3, g4 = st.columns([4, 6])
+    with g3:
+        st.markdown("**Risk and return by fund**")
+        if stats.empty:
+            st.caption("Not enough data in this period.")
+        else:
+            st.dataframe(stats, hide_index=True, use_container_width=True, height=300,
+                         column_config={"Return %": st.column_config.NumberColumn(format="%+.2f"),
+                                        "Volatility %": st.column_config.NumberColumn(format="%.2f"),
+                                        "Max drawdown %": st.column_config.NumberColumn(format="%.2f"),
+                                        "Beta": st.column_config.NumberColumn(format="%.2f")})
     o = sub[sub["Fund_ID"] == one].sort_values("Date")
     exp, band = numcol(o, "Expected_NAV_1e4") / 10000, numcol(o, "Band_bps")
-    fb = go.Figure()
-    fb.add_trace(go.Scatter(x=o["Date"], y=exp * (1 + band / 10000), line=dict(width=0), showlegend=False, hoverinfo="skip"))
-    fb.add_trace(go.Scatter(x=o["Date"], y=exp * (1 - band / 10000), fill="tonexty", fillcolor="rgba(37,99,235,.12)", line=dict(width=0), name="Expected band"))
-    fb.add_trace(go.Scatter(x=o["Date"], y=exp, name="Expected (frozen before data)", line=dict(color="#2563eb", dash="dot")))
     breach = o["N01"].apply(truthy) if "N01" in o else pd.Series(False, index=o.index)
-    fb.add_trace(go.Scatter(x=o["Date"], y=o["NAV"], name="Actual NAV", mode="lines+markers", line=dict(color="#111827"),
-                            marker=dict(color=np.where(breach, "#dc2626", "#111827"), size=np.where(breach, 10, 5))))
-    fb.update_layout(height=360, title=f"{one}: actual NAV vs expected band (red = N01 breach)", margin=dict(l=10, r=10, t=50, b=10),
-                     legend=dict(orientation="h", y=-0.2))
-    st.plotly_chart(fb, use_container_width=True)
+    fbd = go.Figure()
+    fbd.add_trace(go.Scatter(x=o["Date"], y=exp * (1 + band / 10000), line=dict(width=0), showlegend=False, hoverinfo="skip"))
+    fbd.add_trace(go.Scatter(x=o["Date"], y=exp * (1 - band / 10000), fill="tonexty", fillcolor="rgba(59,130,246,.15)",
+                             line=dict(width=0), name="Expected band"))
+    fbd.add_trace(go.Scatter(x=o["Date"], y=exp, name="Expected (frozen)", line=dict(color="#3b82f6", dash="dot")))
+    fbd.add_trace(go.Scatter(x=o["Date"], y=o["NAV"], name="Actual", mode="lines+markers", line=dict(color="#e5e7eb"),
+                             marker=dict(color=np.where(breach, "#dc2626", "#e5e7eb"), size=np.where(breach, 10, 4))))
+    g4.plotly_chart(style(fbd, 330, f"{one}: actual NAV vs expected band (red = breach)"),
+                    use_container_width=True, config={"displayModeBar": False})
+
+    g5, g6 = st.columns([6, 4])
     prev = numcol(o, "Prev_NAV_1e4")
-    fa = go.Figure()
-    for col_, name_, color in (("Attr_Market_1e4", "Market", "#2563eb"), ("Attr_Income_1e4", "Income", "#16a34a"),
-                               ("Attr_Fees_1e4", "Fees", "#d97706"), ("Attr_Residual_1e4", "Unexplained", "#dc2626")):
-        fa.add_trace(go.Bar(x=o["Date"], y=numcol(o, col_) / prev * 10000, name=name_, marker_color=color))
-    fa.update_layout(barmode="relative", height=340, title=f"{one}: daily NAV move by driver (bps)", margin=dict(l=10, r=10, t=50, b=10),
-                     legend=dict(orientation="h", y=-0.2))
-    st.plotly_chart(fa, use_container_width=True)
-    fbk = go.Figure(go.Scatter(x=o["Date"], y=numcol(o, "Admin_Break_bps"), mode="markers+lines", line=dict(color="#7c3aed")))
-    fbk.add_hline(y=10, line_dash="dot", line_color="#d97706")
-    fbk.add_hline(y=50, line_dash="dot", line_color="#dc2626")
-    fbk.update_layout(height=260, title=f"{one}: break vs administrator NAV (bps; 10 = warning, 50 = hard)", margin=dict(l=10, r=10, t=50, b=10))
-    st.plotly_chart(fbk, use_container_width=True)
+    fa = go.Figure([go.Bar(x=o["Date"], y=numcol(o, c) / prev * 10000, name=nm, marker_color=col)
+                    for c, nm, col in (("Attr_Market_1e4", "Market", "#3b82f6"), ("Attr_Income_1e4", "Income", "#16a34a"),
+                                       ("Attr_Fees_1e4", "Fees", "#d97706"), ("Attr_Residual_1e4", "Unexplained", "#dc2626"))])
+    fa.update_layout(barmode="relative")
+    g5.plotly_chart(style(fa, 300, f"{one}: daily NAV move by driver (bps)"), use_container_width=True, config={"displayModeBar": False})
+    fk = go.Figure(go.Scatter(x=o["Date"], y=numcol(o, "Admin_Break_bps"), mode="lines+markers", line=dict(color="#a78bfa")))
+    fk.add_hline(y=10, line_dash="dot", line_color="#d97706")
+    fk.add_hline(y=50, line_dash="dot", line_color="#dc2626")
+    g6.plotly_chart(style(fk, 300, f"{one}: break vs administrator (bps)"), use_container_width=True, config={"displayModeBar": False})
 
 
 def page_realfund():
