@@ -273,7 +273,7 @@ def who(email):
 # ---------------------------------------------------------------------------- shared data helpers
 def ai_rows():
     ai = T("AI_Decisions")
-    return {str(r["AI_Call_ID"]): r for _, r in ai.iterrows()} if not ai.empty else {}
+    return {str(r["AI_Call_ID"]): r.to_dict() for _, r in ai.iterrows()} if not ai.empty else {}
 
 
 def ai_coverage(exc):
