@@ -1,0 +1,37 @@
+name: navcr-daily
+on:
+  workflow_dispatch:
+    inputs:
+      mode:   { description: "run | realfund | bootstrap", required: true, default: "run" }
+      target: { description: "live | replay", required: true, default: "live" }
+      inject: { description: "demo errors to plant (0-3, live run only)", required: false, default: "0" }
+      start:  { description: "realfund start date YYYY-MM-DD (optional)", required: false, default: "" }
+      end:    { description: "realfund end date YYYY-MM-DD (optional)", required: false, default: "" }
+permissions:
+  contents: write
+concurrency:
+  group: navcr-${{ inputs.target }}
+  cancel-in-progress: false
+jobs:
+  job:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements-job.txt
+      - name: Run NAV Control Room job
+        env:
+          NAVCR_SECRET: ${{ secrets.NAVCR_SECRET }}
+          NAVCR_WEBAPP_URL: ${{ inputs.target == 'replay' && secrets.WEBAPP_URL_REPLAY || secrets.WEBAPP_URL_LIVE }}
+          F6_TER_BPS: ${{ vars.F6_TER_BPS }}
+          F6_BREAK_BPS: ${{ vars.F6_BREAK_BPS }}
+        run: python navcr_daily.py "${{ inputs.mode }}" --inject "${{ inputs.inject }}" --start "${{ inputs.start }}" --end "${{ inputs.end }}"
+      - name: Save private answer key for demo errors
+        if: ${{ inputs.mode == 'run' }}
+        run: |
+          git config user.name "navcr-bot"
+          git config user.email "navcr-bot@users.noreply.github.com"
+          if [ -f live_answer_key.csv ]; then git add live_answer_key.csv; fi
+          git diff --cached --quiet || (git commit -m "Live answer key ${{ github.run_id }}" && git push)
