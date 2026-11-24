@@ -333,10 +333,16 @@ with st.sidebar:
         st.markdown(f"**{u['name'] or u['email']}**  \n" + (chip(role, "#2563eb") if role else chip("NOT REGISTERED", "#dc2626")),
                     unsafe_allow_html=True)
         st.button("Sign out", on_click=st.logout, use_container_width=True)
-        _rv = T("Reviewers")
-        st.caption(f"Signed-in e-mail: '{u['email']}'")
-        st.caption(f"Reviewers rows read: {len(_rv)} · columns: {list(_rv.columns)}")
-        st.caption(f"E-mails read: {[str(x).strip().lower() for x in _rv.get('Reviewer_Email', [])]}")
+        try:
+            import gspread
+            from google.oauth2.service_account import Credentials
+            _c = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]),
+                                                       scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+            _sh = gspread.authorize(_c).open_by_key(ENV["sheet_id"])
+            st.caption(f"Tabs: {[w.title for w in _sh.worksheets()]}")
+            st.caption(f"Reviewers row 1: {_sh.worksheet('Reviewers').row_values(1)}")
+        except Exception as e:
+            st.caption(f"Read error: {type(e).__name__}: {e}")
     nav_all = T("NAV_Runs")
     if nav_all.empty:
         st.warning("NAV_Runs is empty for this environment.")
