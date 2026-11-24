@@ -1,0 +1,500 @@
+"""
+THE NAV CONTROL ROOM — Streamlit dashboard v3.0
+Zensar BFSI Program · Project 1 · Team: Akshay Jadhav, Deepa Pandey, Pratyush Bamb, Vikram Shetty
+
+v3: multi-page control room · Google sign-in · maker-checker decisions with evidence upload (sent to the Apps Script
+web app, which validates them and writes the audit trail; the dashboard never writes to the Sheet) · Replay and Live
+environments · fund performance analytics · real-fund (UTI Nifty 50 Index Fund) NAV check · data-quality and audit views.
+"""
+import base64
+import hashlib
+import hmac
+import json
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from io import StringIO
+from urllib.parse import quote
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import streamlit as st
+
+st.set_page_config(page_title="NAV Control Room", page_icon="🏦", layout="wide")
+
+IST = timezone(timedelta(hours=5, minutes=30))
+DEFAULT_SHEET_ID = "159qLct6HLJG_qAqFAfPn9LOc2bUoog7x3tSHT51mE_k"
+LABELS = ["STALE_PRICE", "FAT_FINGER", "SOURCE_VARIANCE", "MISSING_PRICE", "UNPROCESSED_DIVIDEND", "UNPROCESSED_SPLIT",
+          "FEE_ERROR", "GENUINE_MARKET_MOVE", "BENIGN_NOISE", "UNEXPLAINED"]
+ACTIONS = ["USE_SELECTED_PRICE", "CONFIRM_PRICE_MANUALLY", "BOOK_CORPORATE_ACTION", "RECALCULATE_FEE", "NO_ACTION", "INVESTIGATE"]
+REASONS = ["VENDOR_ERROR", "CA_MISSED", "FEE_SETUP", "GENUINE_MOVE", "AI_MISREAD_EVIDENCE", "NEEDS_SENIOR", "CLEAN_RELEASE", "OTHER"]
+FUND_STATUS_COLOR = {"RELEASED": "#15803d", "READY": "#16a34a", "IN_REVIEW": "#d97706", "BLOCKED": "#dc2626"}
+CASE_STATUS_COLOR = {"NEW": "#64748b", "AI_DONE": "#2563eb", "PENDING_CHECK": "#7c3aed", "ESCALATED": "#ea580c", "CLOSED": "#15803d"}
+SERIES_COLORS = ["#2563eb", "#16a34a", "#d97706", "#9333ea", "#dc2626", "#0891b2"]
+MIME = {"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "csv": "text/csv",
+        "txt": "text/plain", "eml": "message/rfc822",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xls": "application/vnd.ms-excel"}
+MAX_FILE_MB = 10
+TABS = {"Funds": "Fund_ID", "NAV_Runs": "Run_Key", "Cases": "Case_ID", "AI_Decisions": "AI_Call_ID", "Reviews": "Review_ID",
+        "Release_Log": "Release_ID", "Reviewers": "Reviewer_Email", "NAV_Snapshots": "Snapshot_Key", "Price_Overrides": "Price_Key",
+        "Calendar": "Date", "Run_Log": "Run_ID", "Flags": "Flag_ID", "RealFund_NAV": "RF_Key", "Prices": "Price_Key",
+        "Positions": "Position_Key", "CorpActions": "CA_ID", "CA_Bookings": "Booking_ID", "Fee_Accruals": "Accrual_Key",
+        "Rule_Catalogue": "Rule_ID"}
+DATE_COLS = {"Date", "Prev_Business_Day", "Ex_Date", "Pay_Date"}
+TS_COLS = {"Timestamp", "Approved_At", "Start_Time", "End_Time", "Created_At", "Closed_At", "Called_At", "Captured_At",
+           "Confirmed_At", "Computed_At", "Expected_Frozen_At"}
+
+st.markdown("""
+<style>
+.block-container {padding-top: 1.4rem;}
+.hero h1 {font-size: 1.7rem; margin: 0;}
+.hero p {opacity: .7; margin: .1rem 0 1rem 0;}
+.kpi {border-radius: 12px; padding: 12px 14px; background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.18);}
+.kpi .l {font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7;}
+.kpi .v {font-size: 1.55rem; font-weight: 700; line-height: 1.25;}
+.kpi .s {font-size: .78rem; opacity: .75;}
+.fund {border-radius: 12px; padding: 12px 14px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18);
+       border-left: 6px solid #64748b; min-height: 190px;}
+.fund .fn {font-size: .78rem; opacity: .7; margin-bottom: .3rem;}
+.fund .nav {font-size: 1.35rem; font-weight: 700;}
+.fund .meta {font-size: .76rem; opacity: .8; margin-top: .35rem; line-height: 1.45;}
+.chip {display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: .72rem; font-weight: 700;}
+.steps {display: flex; gap: 8px; flex-wrap: wrap; margin: .3rem 0 1rem 0;}
+.step {flex: 1 1 150px; border-radius: 10px; padding: 10px 12px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18);}
+.step.done {border-top: 4px solid #16a34a;} .step.wait {border-top: 4px solid #d97706;}
+.step.fail {border-top: 4px solid #dc2626;} .step.todo {border-top: 4px solid #94a3b8;}
+.step .t {font-weight: 700; font-size: .85rem;} .step .d {font-size: .76rem; opacity: .8;}
+.card {border-radius: 12px; padding: 12px 16px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18); margin-bottom: .6rem;}
+.small {font-size: .8rem; opacity: .8;}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------- configuration & data access
+def _secret(key, default=None):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+def env_config():
+    try:
+        e = st.secrets.get("envs", {})
+        out = {k: dict(v) for k, v in dict(e).items()}
+    except Exception:
+        out = {}
+    return out or {"replay": {"label": "Replay", "sheet_id": DEFAULT_SHEET_ID, "webapp_url": ""}}
+
+
+def _has_sa():
+    try:
+        return "gcp_service_account" in st.secrets
+    except Exception:
+        return False
+
+
+def _serial_date(v):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return (pd.Timestamp("1899-12-30") + pd.Timedelta(days=float(v))).strftime("%Y-%m-%d")
+    s = str(v).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return ""
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    try:
+        return pd.to_datetime(s, dayfirst=True).strftime("%Y-%m-%d")
+    except Exception:
+        return s
+
+
+def _serial_ts(v):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return (pd.Timestamp("1899-12-30") + pd.Timedelta(days=float(v))).strftime("%Y-%m-%d %H:%M:%S")
+    return str(v)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_tab(sheet_id, tab, key_col):
+    try:
+        if _has_sa():
+            import gspread
+            from google.oauth2.service_account import Credentials
+            creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]),
+                                                          scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+            ws = gspread.authorize(creds).open_by_key(sheet_id).worksheet(tab)
+            vals = ws.get_all_values(value_render_option="UNFORMATTED_VALUE", date_time_render_option="SERIAL_NUMBER")
+            if not vals:
+                return pd.DataFrame()
+            df = pd.DataFrame(vals[1:], columns=[str(h).strip() for h in vals[0]])
+        else:
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&headers=1&sheet={quote(tab)}"
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            df = pd.read_csv(StringIO(r.text), dtype=str, keep_default_na=False)
+            df.columns = [str(c).strip() for c in df.columns]
+        df = df.loc[:, [c for c in df.columns if c and not c.startswith("Unnamed")]]
+        if key_col not in df.columns:
+            return pd.DataFrame()
+        for c in df.columns:
+            if c in DATE_COLS:
+                df[c] = df[c].apply(_serial_date)
+            elif c in TS_COLS:
+                df[c] = df[c].apply(_serial_ts)
+        df = df[df[key_col].astype(str).str.strip() != ""].reset_index(drop=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def T(tab):
+    return load_tab(ENV["sheet_id"], tab, TABS[tab])
+
+
+def num(v):
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        return None if pd.isna(v) else float(v)
+    s = str(v).strip().replace(",", "").replace("₹", "")
+    if s in ("", "—", "-", "nan", "NaN", "None") or s.startswith("#") or s.upper() == "NOT_COMPUTABLE":
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def numcol(df, c):
+    return pd.to_numeric(df[c], errors="coerce") if c in df.columns else pd.Series(np.nan, index=df.index)
+
+
+def truthy(v):
+    return v is True or str(v).strip().upper() == "TRUE"
+
+
+def nav_text(v1e4):
+    x = num(v1e4)
+    return "NOT COMPUTABLE" if x is None else f"₹{x / 10000:,.4f}"
+
+
+def fmt_bps(v, signed=True):
+    x = num(v)
+    return "—" if x is None else (f"{x:+.1f} bps" if signed else f"{x:.1f} bps")
+
+
+def chip(text, color):
+    return f'<span class="chip" style="background:{color}22;color:{color};border:1px solid {color}55">{text}</span>'
+
+
+def kpis(items):
+    cols = st.columns(len(items))
+    for col, (label, value, sub) in zip(cols, items):
+        col.markdown(f'<div class="kpi"><div class="l">{label}</div><div class="v">{value}</div><div class="s">{sub}</div></div>',
+                     unsafe_allow_html=True)
+
+
+def header(title, subtitle):
+    st.markdown(f'<div class="hero"><h1>{title}</h1><p>{subtitle}</p></div>', unsafe_allow_html=True)
+
+
+def flash():
+    f = st.session_state.pop("flash", None)
+    if f:
+        (st.success if f[0] == "ok" else st.error)(f[1])
+
+
+def finish(resp, ok_msg=None):
+    if resp.get("ok"):
+        st.session_state["flash"] = ("ok", ok_msg or resp.get("message") or "Done.")
+    else:
+        st.session_state["flash"] = ("err", resp.get("error") or "Request failed.")
+    st.cache_data.clear()
+    st.rerun()
+
+
+def api(action, data, timeout=120):
+    url, secret = ENV.get("webapp_url"), _secret("navcr_secret")
+    if not url or not secret:
+        return {"ok": False, "error": "Web app URL or shared secret is not configured for this environment."}
+    payload = json.dumps(data, separators=(",", ":"), default=str)
+    ts, nonce = str(int(time.time())), uuid.uuid4().hex
+    sig = hmac.new(secret.encode(), f"{action}|{ts}|{nonce}|{payload}".encode(), hashlib.sha256).hexdigest()
+    try:
+        r = requests.post(url, data=json.dumps({"action": action, "ts": ts, "nonce": nonce, "payload": payload, "sig": sig}),
+                          headers={"Content-Type": "application/json"}, timeout=timeout)
+        return r.json()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------------------- identity
+def auth_configured():
+    try:
+        return "auth" in st.secrets
+    except Exception:
+        return False
+
+
+def me():
+    if not auth_configured():
+        return None
+    try:
+        if not st.user.is_logged_in:
+            return None
+        return {"email": str(st.user.get("email") or "").strip().lower(), "name": str(st.user.get("name") or "")}
+    except Exception:
+        return None
+
+
+def reviewer_map():
+    rv = T("Reviewers")
+    if rv.empty:
+        return {}
+    return {str(r["Reviewer_Email"]).strip().lower(): {"name": str(r.get("Name", "")), "role": str(r.get("Role", "")).upper()}
+            for _, r in rv.iterrows()}
+
+
+def role_of(u):
+    return reviewer_map().get(u["email"], {}).get("role") if u else None
+
+
+def who(email):
+    e = str(email or "").strip().lower()
+    return reviewer_map().get(e, {}).get("name") or ("Unregistered" if e else "—")
+
+
+# ---------------------------------------------------------------------------- shared data helpers
+def ai_rows():
+    ai = T("AI_Decisions")
+    return {str(r["AI_Call_ID"]): r for _, r in ai.iterrows()} if not ai.empty else {}
+
+
+def ai_coverage(exc):
+    if exc.empty:
+        return 0, 0
+    m = ai_rows()
+    return int(sum(str(m.get(str(x), {}).get("AI_Status", "")) in ("OK", "CACHED") for x in exc["Latest_AI_Call_ID"])), len(exc)
+
+
+def age_text(ts):
+    try:
+        t = pd.Timestamp(ts).tz_localize(IST) if pd.Timestamp(ts).tzinfo is None else pd.Timestamp(ts)
+        mins = (pd.Timestamp.now(tz=IST) - t).total_seconds() / 60
+        return f"{mins:.0f} min" if mins < 120 else f"{mins / 60:.1f} h"
+    except Exception:
+        return "—"
+
+
+def events():
+    ev = []
+    rl = T("Run_Log")
+    for _, r in rl.iterrows():
+        ev.append({"Time": r.get("End_Time") or r.get("Start_Time"), "Type": "RUN", "Actor": "System",
+                   "Object": f"{r.get('Date', '')} · {r.get('Step', '')}", "Detail": f"{r.get('Status', '')} — {r.get('Message', '')}"})
+    for _, r in T("AI_Decisions").iterrows():
+        ev.append({"Time": r.get("Called_At"), "Type": "AI", "Actor": str(r.get("Model", ""))[:40], "Object": r.get("Case_ID"),
+                   "Detail": f"{r.get('Classification', '')} · conf {r.get('Confidence', '')} · {r.get('Confidence_Band', '')} · {r.get('AI_Status', '')}"})
+    for _, r in T("Reviews").iterrows():
+        ok = truthy(r.get("Valid"))
+        ev.append({"Time": r.get("Timestamp"), "Type": f"REVIEW · {r.get('Stage', 'MAKER') or 'MAKER'}", "Actor": who(r.get("Reviewer_Email")),
+                   "Object": r.get("Case_ID"), "Detail": f"{r.get('Decision', '')} {r.get('Final_Classification', '')}"
+                   + ("" if ok else f" — REJECTED: {r.get('Invalid_Reason', '')}")})
+    for _, r in T("Release_Log").iterrows():
+        ev.append({"Time": r.get("Approved_At"), "Type": "RELEASE", "Actor": who(r.get("Approved_By")),
+                   "Object": f"{r.get('Date', '')} · {r.get('Fund_ID', '')}", "Detail": f"{r.get('Decision', '')} · NAV {nav_text(r.get('NAV_1e4_Released'))}"})
+    for _, r in T("Price_Overrides").iterrows():
+        ev.append({"Time": r.get("Confirmed_At"), "Type": "PRICE CONFIRMED", "Actor": who(r.get("Confirmed_By")),
+                   "Object": f"{r.get('Date', '')} · {r.get('Security_ID', '')}", "Detail": f"₹{(num(r.get('Confirmed_Price_Paise')) or 0) / 100:,.2f}"})
+    df = pd.DataFrame(ev)
+    if df.empty:
+        return df
+    df["Time"] = df["Time"].astype(str)
+    return df.sort_values("Time", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------- sidebar: environment, identity, date
+ENVS = env_config()
+with st.sidebar:
+    env_key = st.selectbox("Environment", list(ENVS), format_func=lambda k: ENVS[k].get("label", k.title()), key="env")
+ENV = ENVS[env_key]
+ENV_MODE = "live" if "live" in env_key.lower() else "replay"
+
+with st.sidebar:
+    u = me()
+    if not auth_configured():
+        st.caption("Sign-in is not configured: read-only mode.")
+    elif u is None:
+        st.button("🔐 Sign in with Google", on_click=st.login, use_container_width=True)
+    else:
+        role = role_of(u)
+        st.markdown(f"**{u['name'] or u['email']}**  \n" + (chip(role, "#2563eb") if role else chip("NOT REGISTERED", "#dc2626")),
+                    unsafe_allow_html=True)
+        st.button("Sign out", on_click=st.logout, use_container_width=True)
+    nav_all = T("NAV_Runs")
+    if nav_all.empty:
+        st.warning("NAV_Runs is empty for this environment.")
+        dates = []
+    else:
+        frozen = nav_all[nav_all.get("Expected_Frozen_At", pd.Series("", index=nav_all.index)).astype(str).str.strip() != ""]
+        dates = sorted((frozen if not frozen.empty else nav_all)["Date"].dropna().unique(), reverse=True)
+    SEL_DATE = st.selectbox("Valuation date", dates, index=0, key=f"date_{env_key}") if dates else ""
+    if st.button("🔄 Refresh data", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+    st.caption(f"Data refreshed at most every 30 s · {datetime.now(IST):%d %b %Y %H:%M} IST")
+    st.markdown(f"[Open the Sheet](https://docs.google.com/spreadsheets/d/{ENV['sheet_id']}/edit)")
+
+
+# ---------------------------------------------------------------------------- reusable panels
+def mini_waterfall(r, height=300):
+    prev, cur = num(r.get("Prev_NAV_1e4")), num(r.get("NAV_1e4"))
+    comps = [num(r.get(c)) for c in ("Attr_Market_1e4", "Attr_Income_1e4", "Attr_Fees_1e4", "Attr_Residual_1e4")]
+    if prev is None or cur is None or any(c is None for c in comps):
+        st.info("Attribution not available (NAV not computable or no previous NAV).")
+        return
+    p, c = prev / 10000, cur / 10000
+    m, inc, fee, res = (x / 10000 for x in comps)
+    fig = go.Figure(go.Waterfall(measure=["absolute", "relative", "relative", "relative", "relative", "total"],
+                                 x=["Previous", "Market", "Income", "Fees", "Unexplained", "Today"], y=[p, m, inc, fee, res, c],
+                                 text=[f"₹{p:.4f}", f"{m:+.4f}", f"{inc:+.4f}", f"{fee:+.4f}", f"{res:+.4f}", f"₹{c:.4f}"],
+                                 textposition="outside", increasing={"marker": {"color": "#16a34a"}},
+                                 decreasing={"marker": {"color": "#dc2626"}}, totals={"marker": {"color": "#2563eb"}}))
+    levels = [p, p + m, p + m + inc, p + m + inc + fee, c]
+    pad = max((max(levels) - min(levels)) * 0.4, p * 0.001)
+    fig.update_yaxes(range=[min(levels) - pad, max(levels) + pad], title="₹ per unit")
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def evidence_panel(c, f):
+    d, sec = c["Date"], str(c.get("Security_ID", "ALL"))
+    funds = [x for x in str(c.get("Fund_IDs", "")).split(",") if x and x != "ALL"]
+    if str(c.get("Case_Type")) == "RELEASE":
+        ai = ai_rows().get(str(c.get("Latest_AI_Call_ID")), {})
+        st.markdown(f'<div class="card"><b>Release recommendation:</b> {c.get("Final_Recommendation", "")}</div>', unsafe_allow_html=True)
+        if ai:
+            st.caption(f"AI memo confidence {ai.get('Confidence', '—')} · guardrail {ai.get('Guardrail_Applied', 'NONE')} {ai.get('Guardrail_Reason', '')}")
+        cases = T("Cases")
+        closed = cases[(cases["Date"] == d) & (cases["Case_Type"] == "EXCEPTION") &
+                       cases["Fund_IDs"].astype(str).str.split(",").apply(lambda x: funds[0] in x if funds else False)]
+        st.markdown("**Exception cases on this fund-day**")
+        st.dataframe(closed[[x for x in ["Case_ID", "Root_Rule_ID", "Max_Severity", "Status", "Final_Recommendation"] if x in closed.columns]],
+                     hide_index=True, use_container_width=True) if not closed.empty else st.caption("None: clean fund-day (rule R02).")
+    if not f.empty:
+        rc = T("Rule_Catalogue")
+        names = dict(zip(rc["Rule_ID"], rc["Rule_Name"])) if not rc.empty else {}
+        show = f[[x for x in ["Rule_ID", "Severity", "Fund_ID", "Source", "Observed_Value", "Threshold_Value", "Est_NAV_Impact_bps"] if x in f.columns]].copy()
+        show.insert(1, "Rule", show["Rule_ID"].map(names))
+        st.markdown("**Why it was flagged**")
+        st.dataframe(show, hide_index=True, use_container_width=True)
+    if sec and sec != "ALL":
+        pr = T("Prices")
+        h = pr[(pr["Security_ID"] == sec) & (pr["Date"] <= d)].sort_values("Date").tail(8) if not pr.empty else pr
+        if not h.empty:
+            fig = go.Figure()
+            for src, color in (("A", "#2563eb"), ("B", "#16a34a"), ("C", "#d97706")):
+                fig.add_trace(go.Scatter(x=h["Date"], y=numcol(h, f"Price_{src}_Paise") / 100, mode="lines+markers",
+                                         name=f"Source {src}", line=dict(color=color)))
+            fig.add_trace(go.Scatter(x=h["Date"], y=numcol(h, "Selected_Price_Paise") / 100, mode="markers", name="Selected",
+                                     marker=dict(symbol="diamond-open", size=13, color="#111827", line=dict(width=2))))
+            fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="₹ per share",
+                              legend=dict(orientation="h", y=1.15), title=f"{sec}: three sources, last {len(h)} days")
+            st.plotly_chart(fig, use_container_width=True)
+            today = h[h["Date"] == d]
+            if not today.empty:
+                t = today.iloc[0]
+                st.caption(f"Selected source: **{t.get('Selected_Source', '—')}** · {t.get('Selection_Reason', '')} · "
+                           f"volume {t.get('Volume_A', '—')}")
+        ca = T("CorpActions")
+        if not ca.empty:
+            near = ca[(ca["Security_ID"] == sec)]
+            near = near[pd.to_datetime(near["Ex_Date"], errors="coerce").sub(pd.Timestamp(d)).abs() <= pd.Timedelta(days=7)]
+            if not near.empty:
+                st.markdown("**Corporate actions within 7 days**")
+                st.dataframe(near, hide_index=True, use_container_width=True)
+                bk = T("CA_Bookings")
+                if not bk.empty:
+                    st.dataframe(bk[bk["CA_ID"].isin(near["CA_ID"])], hide_index=True, use_container_width=True)
+    if not f.empty and f["Rule_ID"].astype(str).str.startswith("F").any():
+        fe = T("Fee_Accruals")
+        rows = fe[(fe["Date"] == d) & fe["Fund_ID"].isin(funds)] if not fe.empty else fe
+        if not rows.empty:
+            st.markdown("**Booked vs recalculated fee**")
+            st.dataframe(rows[[x for x in ["Fund_ID", "Accrual_Days", "Exp_Accrual_Days", "Basis_Net_Assets_Paise", "Prev_Net_Assets_Paise",
+                                           "Mgmt_Fee_Paise", "Recalc_Mgmt_Paise", "Diff_Mgmt_Paise"] if x in rows.columns]],
+                         hide_index=True, use_container_width=True)
+    nav = T("NAV_Runs")
+    ctx = nav[(nav["Date"] == d) & nav["Fund_ID"].isin(funds)] if funds else nav.iloc[0:0]
+    if not ctx.empty:
+        st.markdown("**NAV context**")
+        view = pd.DataFrame({"Fund": ctx["Fund_ID"], "NAV": ctx["NAV_1e4"].apply(nav_text),
+                             "Expected": ctx["Expected_NAV_1e4"].apply(nav_text), "Dev vs expected": ctx["Dev_vs_Expected_bps"].apply(fmt_bps),
+                             "Band": ctx["Band_bps"].apply(lambda v: fmt_bps(v, False)), "Admin break": ctx["Admin_Break_bps"].apply(lambda v: fmt_bps(v, False)),
+                             "Status": ctx["Fund_Day_Status"]})
+        st.dataframe(view, hide_index=True, use_container_width=True)
+        mini_waterfall(ctx.iloc[0], height=280)
+
+
+def ai_panel(ai):
+    if not ai or str(ai.get("Classification", "")) in ("", "NO_AI"):
+        st.warning("No AI recommendation for this case (guardrail G4). Decide from the evidence and use OVERRIDE.")
+        if ai:
+            st.caption(f"Attempt detail: HTTP {ai.get('HTTP_Status_History') or ai.get('HTTP_Status', '')} · {ai.get('Rationale', '')}")
+        return
+    band = str(ai.get("Confidence_Band", ""))
+    bcol = {"HIGH": "#16a34a", "MEDIUM": "#d97706", "LOW": "#dc2626"}.get(band, "#64748b")
+    conf = num(ai.get("Confidence")) or 0
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(f'<div class="kpi"><div class="l">Classification</div><div class="v" style="font-size:1.1rem">{ai.get("Classification")}</div>'
+                f'<div class="s">is_error = {ai.get("Is_Error")}</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="kpi"><div class="l">Recommended action</div><div class="v" style="font-size:1.1rem">{ai.get("Recommended_Action")}</div>'
+                f'<div class="s">source {ai.get("Recommended_Source", "—")} · impact {ai.get("AI_Impact_bps", "—")} bps</div></div>', unsafe_allow_html=True)
+    c3.markdown(f'<div class="kpi"><div class="l">Confidence</div><div class="v">{conf:.2f}</div><div class="s">{chip(band or "—", bcol)}</div></div>',
+                unsafe_allow_html=True)
+    st.progress(min(max(conf, 0.0), 1.0))
+    if band == "LOW":
+        st.error("AI uncertain or in disagreement with the rules: verify the evidence before approving.")
+    st.markdown(f'<div class="card"><b>Rationale.</b> {ai.get("Rationale", "")}<br><span class="small">Evidence used: '
+                f'{ai.get("Evidence_Used", "")}</span></div>', unsafe_allow_html=True)
+    st.caption(f"Guardrails: {ai.get('Guardrail_Applied', 'NONE')} — {ai.get('Guardrail_Reason', '')} · Final recommendation: "
+               f"{ai.get('Final_Recommendation', '')} · Model {ai.get('Model', '')} · Prompt {ai.get('Prompt_Version', '')} · "
+               f"HTTP {ai.get('HTTP_Status_History') or ai.get('HTTP_Status', '')}")
+
+
+def evidence_payload(files):
+    out = []
+    for up in files or []:
+        b = up.getvalue()
+        if len(b) > MAX_FILE_MB * 1024 * 1024:
+            raise ValueError(f"{up.name} is larger than {MAX_FILE_MB} MB")
+        ext = up.name.rsplit(".", 1)[-1].lower()
+        out.append({"name": up.name, "mime": MIME.get(ext, up.type or "application/octet-stream"), "b64": base64.b64encode(b).decode()})
+    return out
+
+
+def maker_form(c, rules, ai):
+    u = me()
+    role = role_of(u)
+    cid, status = c["Case_ID"], str(c["Status"])
+    is_release = str(c.get("Case_Type")) == "RELEASE"
+    if not u:
+        st.info("Sign in to propose a decision.")
+        return
+    if not role:
+        st.warning("Your account is not registered in the Reviewers tab.")
+        return
+    if status == "ESCALATED" and role != "SENIOR":
+        st.info("This case was escalated: only a SENIOR can act as maker.")
+        return
+    needs_price = any(r in ("P02", "P07") for r in rules)
+    st.markdown(f"**Maker proposal** · you are {chip(role, '#2563eb')} · a different SENIOR must confirm it", unsafe_allow_html=True)
+    with st.form(f"maker_{cid}"):
+        if is_release:
+            decision = st.radio("Proposal", ["RELEASE", "HOLD"], horizontal=True, index=None)
+            action = st.selectbox("Action taken", ["RELEASE_NAV", "HOLD_NAV"], index=None)
+            final_class = ""
+        else:
+            decision = st.radio("Decision", ["
