@@ -48,26 +48,30 @@ TS_COLS = {"Timestamp", "Approved_At", "Start_Time", "End_Time", "Created_At", "
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1.4rem;}
-.hero h1 {font-size: 1.7rem; margin: 0;}
-.hero p {opacity: .7; margin: .1rem 0 1rem 0;}
-.kpi {border-radius: 12px; padding: 12px 14px; background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.18);}
-.kpi .l {font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7;}
-.kpi .v {font-size: 1.55rem; font-weight: 700; line-height: 1.25;}
-.kpi .s {font-size: .78rem; opacity: .75;}
-.fund {border-radius: 12px; padding: 12px 14px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18);
-       border-left: 6px solid #64748b; min-height: 190px;}
-.fund .fn {font-size: .78rem; opacity: .7; margin-bottom: .3rem;}
-.fund .nav {font-size: 1.35rem; font-weight: 700;}
-.fund .meta {font-size: .76rem; opacity: .8; margin-top: .35rem; line-height: 1.45;}
-.chip {display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: .72rem; font-weight: 700;}
-.steps {display: flex; gap: 8px; flex-wrap: wrap; margin: .3rem 0 1rem 0;}
-.step {flex: 1 1 150px; border-radius: 10px; padding: 10px 12px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18);}
-.step.done {border-top: 4px solid #16a34a;} .step.wait {border-top: 4px solid #d97706;}
-.step.fail {border-top: 4px solid #dc2626;} .step.todo {border-top: 4px solid #94a3b8;}
-.step .t {font-weight: 700; font-size: .85rem;} .step .d {font-size: .76rem; opacity: .8;}
-.card {border-radius: 12px; padding: 12px 16px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18); margin-bottom: .6rem;}
-.small {font-size: .8rem; opacity: .8;}
+#MainMenu, footer {visibility: hidden;}
+.block-container {padding-top: .8rem; padding-bottom: .5rem; max-width: 100%;}
+.hero h1 {font-size: 1.5rem; margin: 0;}
+.hero p {opacity: .7; margin: .1rem 0 .8rem 0;}
+.topbar {display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border-radius: 10px;
+         background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.18); margin-bottom: 10px; font-size: .85rem;}
+.topbar .dl {font-weight: 700;}
+.tile {border-radius: 10px; padding: 10px 12px; background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.16);}
+.tile .l {font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; opacity: .7;}
+.tile .v {font-size: 1.45rem; font-weight: 800; line-height: 1.2;}
+.tile .s {font-size: .72rem; opacity: .7;}
+.kpi {border-radius: 10px; padding: 10px 12px; background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.18);}
+.kpi .l {font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7;}
+.kpi .v {font-size: 1.4rem; font-weight: 700; line-height: 1.25;}
+.kpi .s {font-size: .75rem; opacity: .75;}
+.chip {display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: .7rem; font-weight: 700;}
+.pipe {display: flex; gap: 6px; flex-wrap: wrap;}
+.pipe span {font-size: .72rem; padding: 2px 8px; border-radius: 6px; background: rgba(127,127,127,.12);}
+.card {border-radius: 10px; padding: 10px 14px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18); margin-bottom: .5rem;}
+.small {font-size: .78rem; opacity: .8;}
+.fund {border-radius: 10px; padding: 10px 12px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18); border-left: 6px solid #64748b;}
+.fund .fn {font-size: .75rem; opacity: .7;} .fund .nav {font-size: 1.25rem; font-weight: 700;} .fund .meta {font-size: .74rem; opacity: .8;}
+.steps {display: flex; gap: 8px; flex-wrap: wrap;} .step {flex: 1 1 150px; border-radius: 10px; padding: 8px 10px; background: rgba(127,127,127,.07);}
+.step .t {font-weight: 700; font-size: .8rem;} .step .d {font-size: .72rem; opacity: .8;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -642,94 +646,204 @@ def with_ai_columns(df):
     df["AI_Band"] = df["Latest_AI_Call_ID"].map(lambda x: m.get(str(x), {}).get("Confidence_Band", ""))
     return df
 
+# ---------------------------------------------------------------------------- dashboard helpers (Control Tower v3.1)
+MATRIX_SCALE = [[0.0, "#15803d"], [0.25, "#15803d"], [0.25, "#1d4ed8"], [0.5, "#1d4ed8"],
+                [0.5, "#b45309"], [0.75, "#b45309"], [0.75, "#b91c1c"], [1.0, "#b91c1c"]]
 
-# ---------------------------------------------------------------------------- pages
-def page_control_tower():
-    header("Control Tower", f"{ENV.get('label', env_key)} · valuation date {SEL_DATE or '—'}")
-    flash()
-    nav_chk = T("NAV_Runs")
-    if not nav_chk.empty and SEL_DATE:
-        day_chk = nav_chk[nav_chk["Date"] == SEL_DATE]
-        if (day_chk["Expected_Frozen_At"].astype(str).str.strip() == "").all():
-            st.info("This is a warm-up date: clean history used to estimate beta and the expected-NAV band. "
-                    "It is not checked by the rules, so it has no cases. "
-                    + ("Click 'Fetch & process latest trading day' below to run the first live day."
-                       if ENV_MODE == "live" else "Select a test date from the sidebar."))
-    nav, funds, cases = T("NAV_Runs"), T("Funds"), T("Cases")
-    day = nav[nav["Date"] == SEL_DATE].copy() if not nav.empty else nav
-    if day.empty:
-        st.info("No NAV rows for this date yet.")
+
+def style(fig, height, title=None):
+    fig.update_layout(height=height, margin=dict(l=8, r=8, t=34 if title else 8, b=8), font=dict(size=11),
+                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=-0.18))
+    if title:
+        fig.update_layout(title=dict(text=title, font=dict(size=13), x=0.01))
+    return fig
+
+
+def tiles(items):
+    cols = st.columns(len(items))
+    for col, (label, value, sub, color) in zip(cols, items):
+        col.markdown(f'<div class="tile" style="border-top:3px solid {color}"><div class="l">{label}</div>'
+                     f'<div class="v">{value}</div><div class="s">{sub}</div></div>', unsafe_allow_html=True)
+
+
+def pipeline_html(day, exc, cday):
+    rl, fl = T("Run_Log"), T("Flags")
+    run = rl[(rl["Date"] == SEL_DATE) & (rl["Step"] == "FULL_PIPELINE")] if not rl.empty else rl
+    ran = (not run.empty) and (run["Status"] == "SUCCESS").any()
+    nfl = int((fl["Date"] == SEL_DATE).sum()) if not fl.empty else 0
+    ok, n = ai_coverage(exc)
+    closed = int((exc["Status"] == "CLOSED").sum()) if not exc.empty else 0
+    pending = int((cday["Status"] == "PENDING_CHECK").sum()) if not cday.empty else 0
+    rel = int((day["Fund_Day_Status"].astype(str).str.upper() == "RELEASED").sum())
+    steps = [("Feeds", "✅" if ran else "▫️"), (f"Rules {nfl} flags", "✅" if ran else "▫️"),
+             (f"AI {ok}/{n}", "✅" if ok == n else "⏳"), (f"Maker-checker {closed}/{n} · {pending} pending", "✅" if closed == n else "⏳"),
+             (f"Released {rel}/{len(day)}", "✅" if rel == len(day) else "⏳")]
+    return '<div class="pipe">' + "".join(f"<span>{i} {t}</span>" for t, i in steps) + "</div>"
+
+
+def control_matrix(day, exc):
+    controls = ["Prices", "Corp. actions", "Fees", "Expected NAV", "Administrator", "Attribution", "Release"]
+    z, txt = [], []
+    for _, r in day.iterrows():
+        f = r["Fund_ID"]
+        mine = exc[exc["Fund_IDs"].astype(str).str.split(",").apply(lambda x: f in x)] if not exc.empty else exc
+
+        def case_cell(prefix):
+            m = mine[mine["Root_Rule_ID"].astype(str).str.startswith(prefix)] if not mine.empty else mine
+            if m.empty:
+                return 0, "OK"
+            op = m[m["Status"] != "CLOSED"]
+            if op.empty:
+                return 1, f"{len(m)} resolved"
+            return (3 if (op["Max_Severity"] == "HARD").any() else 2), f"{len(op)} open"
+
+        cells = [case_cell("P"), case_cell("C"), case_cell("F")]
+        dev = num(r.get("Dev_vs_Expected_bps"))
+        cells.append((3, "n/a") if dev is None else ((2 if truthy(r.get("N01")) else 0), f"{dev:+.0f} bps"))
+        brk = num(r.get("Admin_Break_bps"))
+        cells.append((2, "missing") if brk is None else ((3 if truthy(r.get("N03")) else 2 if truthy(r.get("N02")) else 0), f"{brk:.1f} bps"))
+        res, prev = num(r.get("Attr_Residual_1e4")), num(r.get("Prev_NAV_1e4"))
+        rb = None if res is None or not prev else res / prev * 10000
+        cells.append((3, "n/a") if rb is None else ((2 if truthy(r.get("N04")) else 0), f"{rb:+.1f} bps"))
+        s = str(r.get("Fund_Day_Status", "")).upper()
+        cells.append({"RELEASED": (0, "Released"), "READY": (1, "Ready"), "IN_REVIEW": (2, "In review"), "BLOCKED": (3, "Blocked")}.get(s, (2, s or "—")))
+        z.append([c[0] for c in cells])
+        txt.append([c[1] for c in cells])
+    fig = go.Figure(go.Heatmap(z=z, x=controls, y=list(day["Fund_ID"]), text=txt, texttemplate="%{text}", zmin=0, zmax=3,
+                               colorscale=MATRIX_SCALE, showscale=False, xgap=3, ygap=3, textfont=dict(color="white", size=11),
+                               hovertemplate="%{y} · %{x}: %{text}<extra></extra>"))
+    fig.update_yaxes(autorange="reversed")
+    fig.update_xaxes(side="top")
+    return style(fig, 300, "Control matrix · green OK · blue resolved/ready · amber review · red critical")
+
+
+def deviation_chart(day):
+    dev, band, y = numcol(day, "Dev_vs_Expected_bps"), numcol(day, "Band_bps"), day["Fund_ID"]
+    colors = ["#64748b" if pd.isna(d) else ("#dc2626" if abs(d) > b else "#16a34a") for d, b in zip(dev, band.fillna(0))]
+    fig = go.Figure(go.Bar(x=dev.fillna(0), y=y, orientation="h", marker_color=colors, name="Actual − expected",
+                           text=["n/a" if pd.isna(d) else f"{d:+.0f}" for d in dev], textposition="outside"))
+    for sign, show in ((1, True), (-1, False)):
+        fig.add_trace(go.Scatter(x=sign * band, y=y, mode="markers", name="± band", showlegend=show,
+                                 marker=dict(symbol="line-ns-open", size=22, color="#94a3b8", line=dict(width=2))))
+    fig.add_vline(x=0, line_color="#94a3b8", line_width=1)
+    fig.update_yaxes(autorange="reversed")
+    return style(fig, 300, "Actual NAV vs frozen expected NAV (bps)")
+
+
+def trend_chart(nav):
+    df = nav[nav["Date"] <= SEL_DATE].copy()
+    df["NAV"] = numcol(df, "NAV_1e4") / 10000
+    piv = df.pivot_table(index="Date", columns="Fund_ID", values="NAV", aggfunc="last").sort_index().tail(20)
+    reb = piv.apply(lambda s: s / s.dropna().iloc[0] * 100 if s.notna().any() else s)
+    fig = go.Figure([go.Scatter(x=reb.index, y=reb[f], name=f, mode="lines", line=dict(width=2, color=SERIES_COLORS[i % 6]))
+                     for i, f in enumerate(reb.columns)])
+    return style(fig, 260, "NAV trend · last 20 days (rebased to 100)")
+
+
+def donut(cday):
+    if cday.empty:
+        labels, values, colors, total = ["No cases"], [1], ["#334155"], 0
     else:
-        if not funds.empty:
-            day = day.merge(funds[["Fund_ID", "Fund_Name"]], on="Fund_ID", how="left")
-        day = day.sort_values("Fund_ID")
-        exc = cases[(cases["Date"] == SEL_DATE) & (cases["Case_Type"] == "EXCEPTION")] if not cases.empty else cases
-        status = day["Fund_Day_Status"].astype(str).str.upper()
-        ok, n = ai_coverage(exc)
-        open_exc = int((exc["Status"] != "CLOSED").sum()) if not exc.empty else 0
-        pending = int((cases[cases["Date"] == SEL_DATE]["Status"] == "PENDING_CHECK").sum()) if not cases.empty else 0
-        breaks = int((numcol(day, "Admin_Break_bps") > 10).sum())
-        kpis([("Released", f"{int((status == 'RELEASED').sum())}/{len(day)}", "funds published"),
-              ("Blocked", int((status == "BLOCKED").sum()), "hard rule or NAV not computable"),
-              ("Open exceptions", open_exc, f"{len(exc)} raised today"),
-              ("Awaiting checker", pending, "maker proposals"),
-              ("AI coverage", f"{ok}/{n}" if n else "—", "cases with a valid AI result"),
-              ("Admin breaks", breaks, "> 10 bps vs administrator")])
-        st.markdown("#### Release gate by fund")
-        snaps = T("NAV_Snapshots")
-        cap = {r["Fund_ID"]: r.get("NAV_1e4_At_Capture") for _, r in snaps[snaps["Date"] == SEL_DATE].iterrows()} if not snaps.empty else {}
-        cols = st.columns(len(day))
-        for col, (_, r) in zip(cols, day.iterrows()):
-            s = str(r.get("Fund_Day_Status", "")).upper()
-            colr = FUND_STATUS_COLOR.get(s, "#64748b")
-            chg = num(r.get("NAV_Change_bps"))
-            n_open = int(((exc["Status"] != "CLOSED") & exc["Fund_IDs"].astype(str).str.split(",").apply(lambda x: r["Fund_ID"] in x)).sum()) if not exc.empty else 0
-            col.markdown(
-                f'<div class="fund" style="border-left-color:{colr}"><b>{r["Fund_ID"]}</b> {chip(s or "—", colr)}'
-                f'<div class="fn">{r.get("Fund_Name", "")}</div><div class="nav">{nav_text(r.get("NAV_1e4"))}</div>'
-                f'<div class="small">{"" if chg is None else f"{chg:+.1f} bps vs previous day"}</div>'
-                f'<div class="meta">Expected {nav_text(r.get("Expected_NAV_1e4"))} ({fmt_bps(r.get("Dev_vs_Expected_bps"))}, band ±'
-                f'{fmt_bps(r.get("Band_bps"), False)})<br>Administrator break {fmt_bps(r.get("Admin_Break_bps"), False)}<br>'
-                f'At capture {nav_text(cap.get(r["Fund_ID"]))} · open cases {n_open}</div></div>', unsafe_allow_html=True)
-        st.markdown("#### Pipeline for this date")
-        rl, fl = T("Run_Log"), T("Flags")
-        run = rl[(rl["Date"] == SEL_DATE) & (rl["Step"] == "FULL_PIPELINE")] if not rl.empty else rl
-        ran = "done" if (not run.empty and (run["Status"] == "SUCCESS").any()) else ("fail" if not run.empty else "todo")
-        frozen = day["Expected_Frozen_At"].astype(str).str.strip()
-        nfl = int((fl["Date"] == SEL_DATE).sum()) if not fl.empty else 0
-        closed = int((exc["Status"] == "CLOSED").sum()) if not exc.empty else 0
-        rel_n = int((status == "RELEASED").sum())
-        steps = [("Feeds ingested", ran, "validated, no partial loads"),
-                 ("Expected NAV frozen", "done" if (frozen != "").any() else "todo", (frozen[frozen != ""].min() if (frozen != "").any() else "—")),
-                 ("Rules", "done" if ran == "done" else "todo", f"{nfl} flags → {len(exc)} cases"),
-                 ("AI classification", "done" if n and ok == n else ("wait" if n else "done"), f"{ok}/{n} valid"),
-                 ("Maker-checker", "done" if n and closed == n else ("wait" if n else "done"), f"{closed}/{n} closed · {pending} awaiting checker"),
-                 ("Release", "done" if rel_n == len(day) else "wait", f"{rel_n}/{len(day)} released")]
-        icon = {"done": "✅", "wait": "⏳", "fail": "❌", "todo": "▫️"}
-        st.markdown('<div class="steps">' + "".join(f'<div class="step {s}"><div class="t">{icon[s]} {t}</div><div class="d">{d}</div></div>'
-                                                   for t, s, d in steps) + "</div>", unsafe_allow_html=True)
-    st.markdown("#### Operate")
+        vc = cday["Status"].value_counts()
+        labels, values, total = list(vc.index), list(vc.values), int(vc.sum())
+        colors = [CASE_STATUS_COLOR.get(s, "#64748b") for s in labels]
+    fig = go.Figure(go.Pie(labels=labels, values=values, hole=0.62, marker=dict(colors=colors), textinfo="value", sort=False))
+    fig.add_annotation(text=f"<b>{total}</b><br>cases", showarrow=False, font=dict(size=14))
+    return style(fig, 260, "Cases by status")
+
+
+def gauge(ok, n):
+    pct = ok / n * 100 if n else 100.0
+    fig = go.Figure(go.Indicator(mode="gauge+number", value=pct, number={"suffix": "%"},
+                                 gauge={"axis": {"range": [0, 100]}, "bar": {"color": "#3b82f6"},
+                                        "steps": [{"range": [0, 60], "color": "rgba(220,38,38,.25)"},
+                                                  {"range": [60, 90], "color": "rgba(217,119,6,.25)"},
+                                                  {"range": [90, 100], "color": "rgba(22,163,74,.25)"}]}))
+    return style(fig, 260, f"AI coverage · {ok}/{n} cases" if n else "AI coverage · no cases")
+
+
+def top_bar(day, exc, cday):
+    now = datetime.now(IST)
+    if SEL_DATE == now.strftime("%Y-%m-%d"):
+        secs = (now.replace(hour=23, minute=0, second=0, microsecond=0) - now).total_seconds()
+        dl = f"⏱ {int(secs // 3600)}h {int(secs % 3600 // 60)}m to the 11:00 PM NAV deadline" if secs > 0 else "⚠ Past the 11:00 PM NAV deadline"
+    else:
+        dl = "Historical valuation date"
+    env_col = "#16a34a" if ENV_MODE == "live" else "#7c3aed"
+    st.markdown(f'<div class="topbar">{chip(ENV.get("label", env_key).upper(), env_col)}<b>NAV date {SEL_DATE}</b>'
+                f'<span class="dl">{dl}</span>{pipeline_html(day, exc, cday)}'
+                f'<span class="small">updated {now:%H:%M:%S} IST</span></div>', unsafe_allow_html=True)
+
+
+def operate_panel():
     u = me()
     can = bool(u and role_of(u))
-    c1, c2, c3 = st.columns(3)
     if ENV_MODE == "live":
-        n_inj = c1.number_input("Demo errors to plant (private answer key)", min_value=0, max_value=3, value=0, step=1)
-        if c2.button("⚡ Fetch & process latest trading day", type="primary", disabled=not can, use_container_width=True):
+        n_inj = st.number_input("Demo errors to plant (private answer key)", min_value=0, max_value=3, value=0, step=1)
+        if st.button("⚡ Fetch & process latest trading day", type="primary", disabled=not can, use_container_width=True):
             finish(api("dispatch_live", {"inject": int(n_inj)}))
-    else:
-        if c1.button("▶ Process next replay date", type="primary", disabled=not can, use_container_width=True):
-            finish(api("run_next", {}))
-    if c3.button("🤖 Retry AI on failed cases", disabled=not can, use_container_width=True):
+    elif st.button("▶ Process next replay date", type="primary", disabled=not can, use_container_width=True):
+        finish(api("run_next", {}))
+    if st.button("🤖 Retry AI on failed cases", disabled=not can, use_container_width=True):
         finish(api("retry_ai", {}))
     if not can:
         st.caption("Sign in with a registered reviewer account to operate the pipeline.")
-    st.markdown("#### Latest activity")
-    ev = events()
-    if ev.empty:
-        st.caption("No activity yet.")
-    else:
-        st.dataframe(ev.head(12), hide_index=True, use_container_width=True)
 
+
+def control_tower_body():
+    nav, funds, cases = T("NAV_Runs"), T("Funds"), T("Cases")
+    day = nav[nav["Date"] == SEL_DATE].copy() if (not nav.empty and SEL_DATE) else pd.DataFrame()
+    if day.empty:
+        st.info("No NAV rows for the selected date.")
+        return
+    if not funds.empty:
+        day = day.merge(funds[["Fund_ID", "Fund_Name"]], on="Fund_ID", how="left")
+    day = day.sort_values("Fund_ID").reset_index(drop=True)
+    cday = cases[cases["Date"] == SEL_DATE] if not cases.empty else cases
+    exc = cday[cday["Case_Type"] == "EXCEPTION"] if not cday.empty else cday
+    top_bar(day, exc, cday)
+    if "Expected_Frozen_At" in day and (day["Expected_Frozen_At"].astype(str).str.strip() == "").all():
+        st.info("Warm-up date: clean history used to estimate beta and the expected-NAV band. It is not checked by the rules. "
+                + ("Use ⚙ Operate → Fetch & process latest trading day to run the first live day." if ENV_MODE == "live"
+                   else "Select a test date in the sidebar."))
+    status = day["Fund_Day_Status"].astype(str).str.upper()
+    ok, n = ai_coverage(exc)
+    open_m = (exc["Status"] != "CLOSED") if not exc.empty else pd.Series(dtype=bool)
+    hard_open = int((open_m & (exc["Max_Severity"] == "HARD")).sum()) if not exc.empty else 0
+    pending = int((cday["Status"] == "PENDING_CHECK").sum()) if not cday.empty else 0
+    dev, band, brk = numcol(day, "Dev_vs_Expected_bps"), numcol(day, "Band_bps"), numcol(day, "Admin_Break_bps")
+    tiles([("Released", f"{int((status == 'RELEASED').sum())}/{len(day)}", f"{int((status == 'READY').sum())} ready for release", "#16a34a"),
+           ("Blocked", int((status == "BLOCKED").sum()), "hard rule or NAV not computable", "#dc2626"),
+           ("Open exceptions", int(open_m.sum()) if not exc.empty else 0, f"{hard_open} HARD · {len(exc)} raised", "#d97706"),
+           ("Awaiting checker", pending, "maker proposals", "#7c3aed"),
+           ("Outside band", int((dev.abs() > band).sum()), "actual vs expected NAV", "#0891b2"),
+           ("Max admin break", "—" if brk.dropna().empty else f"{brk.max():.1f} bps", f"{int((brk > 10).sum())} above 10 bps", "#3b82f6")])
+    c1, c2 = st.columns([6, 4])
+    c1.plotly_chart(control_matrix(day, exc), use_container_width=True, config={"displayModeBar": False})
+    c2.plotly_chart(deviation_chart(day), use_container_width=True, config={"displayModeBar": False})
+    c3, c4, c5 = st.columns([5, 2.5, 2.5])
+    c3.plotly_chart(trend_chart(nav), use_container_width=True, config={"displayModeBar": False})
+    c4.plotly_chart(donut(cday), use_container_width=True, config={"displayModeBar": False})
+    c5.plotly_chart(gauge(ok, n), use_container_width=True, config={"displayModeBar": False})
+    with st.expander("Latest activity", expanded=False):
+        ev = events()
+        if ev.empty:
+            st.caption("No activity yet.")
+        else:
+            st.dataframe(ev.head(15), hide_index=True, use_container_width=True)
+# ---------------------------------------------------------------------------- pages
+def page_control_tower():
+    flash()
+    left, right = st.columns([5, 1])
+    auto = left.toggle("Live auto-refresh (30 s)", value=True, key="ct_auto")
+    with right.popover("⚙ Operate", use_container_width=True):
+        operate_panel()
+
+    @st.fragment(run_every=30 if auto else None)
+    def body():
+        control_tower_body()
+
+    body()
 
 def page_cases():
     header("Case Workbench", "Maker view: evidence, AI recommendation and decision for each exception case")
