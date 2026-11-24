@@ -333,6 +333,10 @@ with st.sidebar:
         st.markdown(f"**{u['name'] or u['email']}**  \n" + (chip(role, "#2563eb") if role else chip("NOT REGISTERED", "#dc2626")),
                     unsafe_allow_html=True)
         st.button("Sign out", on_click=st.logout, use_container_width=True)
+        _rv = T("Reviewers")
+        st.caption(f"Signed-in e-mail: '{u['email']}'")
+        st.caption(f"Reviewers rows read: {len(_rv)} · columns: {list(_rv.columns)}")
+        st.caption(f"E-mails read: {[str(x).strip().lower() for x in _rv.get('Reviewer_Email', [])]}")
     nav_all = T("NAV_Runs")
     if nav_all.empty:
         st.warning("NAV_Runs is empty for this environment.")
