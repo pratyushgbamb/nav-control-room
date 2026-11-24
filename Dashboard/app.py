@@ -49,7 +49,7 @@ TS_COLS = {"Timestamp", "Approved_At", "Start_Time", "End_Time", "Created_At", "
 st.markdown("""
 <style>
 #MainMenu, footer {visibility: hidden;}
-.block-container {padding-top: .8rem; padding-bottom: .5rem; max-width: 100%;}
+.block-container {padding-top: 3.4rem; padding-bottom: .5rem; max-width: 100%;}
 .hero h1 {font-size: 1.5rem; margin: 0;}
 .hero p {opacity: .7; margin: .1rem 0 .8rem 0;}
 .topbar {display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border-radius: 10px;
@@ -714,7 +714,9 @@ def control_matrix(day, exc):
                                hovertemplate="%{y} · %{x}: %{text}<extra></extra>"))
     fig.update_yaxes(autorange="reversed")
     fig.update_xaxes(side="top")
-    return style(fig, 300, "Control matrix · green OK · blue resolved/ready · amber review · red critical")
+    style(fig, 320)
+    fig.update_layout(margin=dict(l=8, r=8, t=40, b=8))   # room for the column labels at the top
+    return fig
 
 
 def deviation_chart(day):
@@ -727,7 +729,7 @@ def deviation_chart(day):
                                  marker=dict(symbol="line-ns-open", size=22, color="#94a3b8", line=dict(width=2))))
     fig.add_vline(x=0, line_color="#94a3b8", line_width=1)
     fig.update_yaxes(autorange="reversed")
-    return style(fig, 300, "Actual NAV vs frozen expected NAV (bps)")
+    return style(fig, 320)
 
 
 def trend_chart(nav):
@@ -819,7 +821,11 @@ def control_tower_body():
            ("Outside band", int((dev.abs() > band).sum()), "actual vs expected NAV", "#0891b2"),
            ("Max admin break", "—" if brk.dropna().empty else f"{brk.max():.1f} bps", f"{int((brk > 10).sum())} above 10 bps", "#3b82f6")])
     c1, c2 = st.columns([6, 4])
+    c1.markdown("**Control matrix** &nbsp; " + chip("OK", "#15803d") + " " + chip("Resolved / ready", "#1d4ed8") + " "
+                + chip("Review", "#b45309") + " " + chip("Critical", "#b91c1c"), unsafe_allow_html=True)
     c1.plotly_chart(control_matrix(day, exc), use_container_width=True, config={"displayModeBar": False})
+    c2.markdown("**Actual NAV vs frozen expected NAV (bps)** &nbsp; " + chip("inside band", "#16a34a") + " "
+                + chip("outside band", "#dc2626"), unsafe_allow_html=True)
     c2.plotly_chart(deviation_chart(day), use_container_width=True, config={"displayModeBar": False})
     c3, c4, c5 = st.columns([5, 2.5, 2.5])
     c3.plotly_chart(trend_chart(nav), use_container_width=True, config={"displayModeBar": False})
