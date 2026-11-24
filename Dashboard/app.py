@@ -381,8 +381,11 @@ def evidence_panel(c, f):
         closed = cases[(cases["Date"] == d) & (cases["Case_Type"] == "EXCEPTION") &
                        cases["Fund_IDs"].astype(str).str.split(",").apply(lambda x: funds[0] in x if funds else False)]
         st.markdown("**Exception cases on this fund-day**")
-        st.dataframe(closed[[x for x in ["Case_ID", "Root_Rule_ID", "Max_Severity", "Status", "Final_Recommendation"] if x in closed.columns]],
-                     hide_index=True, use_container_width=True) if not closed.empty else st.caption("None: clean fund-day (rule R02).")
+          if closed.empty:
+            st.caption("None: clean fund-day (rule R02).")
+        else:
+            st.dataframe(closed[[x for x in ["Case_ID", "Root_Rule_ID", "Max_Severity", "Status", "Final_Recommendation"] if x in closed.columns]],
+                         hide_index=True, use_container_width=True)
     if not f.empty:
         rc = T("Rule_Catalogue")
         names = dict(zip(rc["Rule_ID"], rc["Rule_Name"])) if not rc.empty else {}
@@ -714,7 +717,10 @@ def page_control_tower():
         st.caption("Sign in with a registered reviewer account to operate the pipeline.")
     st.markdown("#### Latest activity")
     ev = events()
-    st.dataframe(ev.head(12), hide_index=True, use_container_width=True) if not ev.empty else st.caption("No activity yet.")
+    if ev.empty:
+        st.caption("No activity yet.")
+    else:
+        st.dataframe(ev.head(12), hide_index=True, use_container_width=True)
 
 
 def page_cases():
