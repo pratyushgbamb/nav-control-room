@@ -803,6 +803,33 @@ def operate_panel():
         st.caption("Sign in with a registered reviewer account to operate the pipeline.")
 
 
+def nav_board(day):
+    snaps = T("NAV_Snapshots")
+    cap = {r["Fund_ID"]: r.get("NAV_1e4_At_Capture") for _, r in snaps[snaps["Date"] == SEL_DATE].iterrows()} if not snaps.empty else {}
+    cols = st.columns(len(day))
+    for col, (_, r) in zip(cols, day.iterrows()):
+        s = str(r.get("Fund_Day_Status", "")).upper()
+        colr = FUND_STATUS_COLOR.get(s, "#64748b")
+        nav, prev = num(r.get("NAV_1e4")), num(r.get("Prev_NAV_1e4"))
+        if nav is not None and prev:
+            d_rs, d_bps = (nav - prev) / 10000, (nav / prev - 1) * 10000
+            c = "#16a34a" if d_rs >= 0 else "#dc2626"
+            chg = f'<span style="color:{c};font-weight:700">{"▲" if d_rs >= 0 else "▼"} ₹{abs(d_rs):,.4f} ({d_bps:+.1f} bps)</span>'
+        else:
+            chg = '<span>no previous NAV</span>'
+        na = num(r.get("Net_Assets_Paise"))
+        aum = "—" if na is None else f"₹{na / 1e9:,.2f} cr"
+        cap_nav = cap.get(r["Fund_ID"])
+        cap_txt = "" if cap_nav is None or num(cap_nav) == nav else f" · at capture {nav_text(cap_nav)}"
+        col.markdown(
+            f'<div class="tile" style="border-left:5px solid {colr}">'
+            f'<div class="l">{r["Fund_ID"]} · {str(r.get("Fund_Name", ""))[:30]}</div>'
+            f'<div class="v">{nav_text(r.get("NAV_1e4"))}</div>'
+            f'<div class="s">{chg}</div>'
+            f'<div class="s">Net assets {aum} · {chip(s or "—", colr)}</div>'
+            f'<div class="s">Expected {nav_text(r.get("Expected_NAV_1e4"))} · Admin {nav_text(r.get("Admin_NAV_1e4"))}{cap_txt}</div>'
+            f'</div>', unsafe_allow_html=True)
+
 def control_tower_body():
     nav, funds, cases = T("NAV_Runs"), T("Funds"), T("Cases")
     day = nav[nav["Date"] == SEL_DATE].copy() if (not nav.empty and SEL_DATE) else pd.DataFrame()
@@ -831,6 +858,8 @@ def control_tower_body():
            ("Awaiting checker", pending, "maker proposals", "#7c3aed"),
            ("Outside band", int((dev.abs() > band).sum()), "actual vs expected NAV", "#0891b2"),
            ("Max admin break", "—" if brk.dropna().empty else f"{brk.max():.1f} bps", f"{int((brk > 10).sum())} above 10 bps", "#3b82f6")])
+    st.markdown("**NAV per unit** · change vs previous business day")
+    nav_board(day)
     c1, c2 = st.columns([6, 4])
     c1.markdown("**Control matrix** &nbsp; " + chip("OK", "#15803d") + " " + chip("Resolved / ready", "#1d4ed8") + " "
                 + chip("Review", "#b45309") + " " + chip("Critical", "#b91c1c"), unsafe_allow_html=True)
