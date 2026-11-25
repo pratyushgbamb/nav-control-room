@@ -65,7 +65,7 @@ st.markdown("""
 .kpi .s {font-size: .75rem; opacity: .75;}
 .chip {display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: .7rem; font-weight: 700;}
 .pipe {display: flex; gap: 6px; flex-wrap: wrap;}
-.pipe span {font-size: .72rem; padding: 2px 8px; border-radius: 6px; background: rgba(127,127,127,.12);}
+.pipe span {font-size: .8rem; padding: 6px 12px; border-radius: 8px; background: rgba(127,127,127,.12);}
 .card {border-radius: 10px; padding: 10px 14px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18); margin-bottom: .5rem;}
 .small {font-size: .78rem; opacity: .8;}
 .fund {border-radius: 10px; padding: 10px 12px; background: rgba(127,127,127,.07); border: 1px solid rgba(127,127,127,.18); border-left: 6px solid #64748b;}
@@ -784,8 +784,7 @@ def top_bar(day, exc, cday):
         dl = "Historical valuation date"
     env_col = "#16a34a" if ENV_MODE == "live" else "#7c3aed"
     st.markdown(f'<div class="topbar">{chip(ENV.get("label", env_key).upper(), env_col)}<b>NAV date {SEL_DATE}</b>'
-                f'<span class="dl">{dl}</span>{pipeline_html(day, exc, cday)}'
-                f'<span class="small">updated {now:%H:%M:%S} IST</span></div>', unsafe_allow_html=True)
+                f'<span class="dl">{dl}</span><span class="small">updated {now:%H:%M:%S} IST</span></div>', unsafe_allow_html=True)
 
 
 def operate_panel():
@@ -830,6 +829,9 @@ def nav_board(day):
             f'<div class="s">Expected {nav_text(r.get("Expected_NAV_1e4"))} · Admin {nav_text(r.get("Admin_NAV_1e4"))}{cap_txt}</div>'
             f'</div>', unsafe_allow_html=True)
 
+CT_VIEWS = ["🧭 Overview", "📊 NAV checks", "⚙️ Workflow", "🕘 Activity"]
+
+
 def control_tower_body():
     nav, funds, cases = T("NAV_Runs"), T("Funds"), T("Cases")
     day = nav[nav["Date"] == SEL_DATE].copy() if (not nav.empty and SEL_DATE) else pd.DataFrame()
@@ -841,42 +843,61 @@ def control_tower_body():
     day = day.sort_values("Fund_ID").reset_index(drop=True)
     cday = cases[cases["Date"] == SEL_DATE] if not cases.empty else cases
     exc = cday[cday["Case_Type"] == "EXCEPTION"] if not cday.empty else cday
+
+    # ---- always visible: status bar + four key tiles
     top_bar(day, exc, cday)
     if "Expected_Frozen_At" in day and (day["Expected_Frozen_At"].astype(str).str.strip() == "").all():
-        st.info("Warm-up date: clean history used to estimate beta and the expected-NAV band. It is not checked by the rules. "
-                + ("Use ⚙ Operate → Fetch & process latest trading day to run the first live day." if ENV_MODE == "live"
-                   else "Select a test date in the sidebar."))
+        st.info("Warm-up date: clean history used to estimate beta and the expected-NAV band; not checked by the rules. "
+                + ("Use ⚙ Operate → Fetch & process latest trading day." if ENV_MODE == "live" else "Select a test date in the sidebar."))
     status = day["Fund_Day_Status"].astype(str).str.upper()
-    ok, n = ai_coverage(exc)
     open_m = (exc["Status"] != "CLOSED") if not exc.empty else pd.Series(dtype=bool)
     hard_open = int((open_m & (exc["Max_Severity"] == "HARD")).sum()) if not exc.empty else 0
     pending = int((cday["Status"] == "PENDING_CHECK").sum()) if not cday.empty else 0
-    dev, band, brk = numcol(day, "Dev_vs_Expected_bps"), numcol(day, "Band_bps"), numcol(day, "Admin_Break_bps")
     tiles([("Released", f"{int((status == 'RELEASED').sum())}/{len(day)}", f"{int((status == 'READY').sum())} ready for release", "#16a34a"),
            ("Blocked", int((status == "BLOCKED").sum()), "hard rule or NAV not computable", "#dc2626"),
-           ("Open exceptions", int(open_m.sum()) if not exc.empty else 0, f"{hard_open} HARD · {len(exc)} raised", "#d97706"),
-           ("Awaiting checker", pending, "maker proposals", "#7c3aed"),
-           ("Outside band", int((dev.abs() > band).sum()), "actual vs expected NAV", "#0891b2"),
-           ("Max admin break", "—" if brk.dropna().empty else f"{brk.max():.1f} bps", f"{int((brk > 10).sum())} above 10 bps", "#3b82f6")])
-    st.markdown("**NAV per unit** · change vs previous business day")
-    nav_board(day)
-    c1, c2 = st.columns([6, 4])
-    c1.markdown("**Control matrix** &nbsp; " + chip("OK", "#15803d") + " " + chip("Resolved / ready", "#1d4ed8") + " "
-                + chip("Review", "#b45309") + " " + chip("Critical", "#b91c1c"), unsafe_allow_html=True)
-    c1.plotly_chart(control_matrix(day, exc), use_container_width=True, config={"displayModeBar": False})
-    c2.markdown("**Actual NAV vs frozen expected NAV (bps)** &nbsp; " + chip("inside band", "#16a34a") + " "
-                + chip("outside band", "#dc2626"), unsafe_allow_html=True)
-    c2.plotly_chart(deviation_chart(day), use_container_width=True, config={"displayModeBar": False})
-    c3, c4, c5 = st.columns([5, 2.5, 2.5])
-    c3.plotly_chart(trend_chart(nav), use_container_width=True, config={"displayModeBar": False})
-    c4.plotly_chart(donut(cday), use_container_width=True, config={"displayModeBar": False})
-    c5.plotly_chart(gauge(ok, n), use_container_width=True, config={"displayModeBar": False})
-    with st.expander("Latest activity", expanded=False):
+           ("Open exceptions", int(open_m.sum()) if not exc.empty else 0, f"{hard_open} HARD · {len(exc)} raised today", "#d97706"),
+           ("Awaiting checker", pending, "maker proposals", "#7c3aed")])
+
+    view = st.segmented_control("View", CT_VIEWS, default=CT_VIEWS[0], key="ct_view", label_visibility="collapsed") or CT_VIEWS[0]
+
+    # ---- 1. Overview: NAV per unit + control matrix
+    if view == CT_VIEWS[0]:
+        st.markdown("**NAV per unit** · change vs previous business day")
+        nav_board(day)
+        st.markdown("**Control matrix** &nbsp; " + chip("OK", "#15803d") + " " + chip("Resolved / ready", "#1d4ed8") + " "
+                    + chip("Review", "#b45309") + " " + chip("Critical", "#b91c1c"), unsafe_allow_html=True)
+        st.plotly_chart(control_matrix(day, exc), use_container_width=True, config={"displayModeBar": False})
+
+    # ---- 2. NAV checks: expected-NAV control, trend, administrator reconciliation
+    elif view == CT_VIEWS[1]:
+        dev, band, brk = numcol(day, "Dev_vs_Expected_bps"), numcol(day, "Band_bps"), numcol(day, "Admin_Break_bps")
+        moves = numcol(day, "NAV_Change_bps").abs()
+        tiles([("Outside expected band", int((dev.abs() > band).sum()), "funds (rule N01)", "#0891b2"),
+               ("Max admin break", "—" if brk.dropna().empty else f"{brk.max():.1f} bps", f"{int((brk > 10).sum())} above 10 bps", "#3b82f6"),
+               ("Largest NAV move", "—" if moves.dropna().empty else f"{moves.max():.0f} bps", "vs previous business day", "#a78bfa")])
+        c1, c2 = st.columns([5, 5])
+        c1.markdown("**Actual NAV vs frozen expected NAV (bps)** &nbsp; " + chip("inside band", "#16a34a") + " "
+                    + chip("outside band", "#dc2626"), unsafe_allow_html=True)
+        c1.plotly_chart(deviation_chart(day), use_container_width=True, config={"displayModeBar": False})
+        c2.markdown("**NAV trend** · last 20 days, rebased to 100")
+        c2.plotly_chart(style(trend_chart(nav), 320), use_container_width=True, config={"displayModeBar": False})
+
+    # ---- 3. Workflow: pipeline, case status, AI coverage
+    elif view == CT_VIEWS[2]:
+        ok, n = ai_coverage(exc)
+        st.markdown("**Pipeline for this date**")
+        st.markdown(pipeline_html(day, exc, cday), unsafe_allow_html=True)
+        c4, c5 = st.columns(2)
+        c4.plotly_chart(donut(cday), use_container_width=True, config={"displayModeBar": False})
+        c5.plotly_chart(gauge(ok, n), use_container_width=True, config={"displayModeBar": False})
+
+    # ---- 4. Activity
+    else:
         ev = events()
         if ev.empty:
             st.caption("No activity yet.")
         else:
-            st.dataframe(ev.head(15), hide_index=True, use_container_width=True)
+            st.dataframe(ev.head(25), hide_index=True, use_container_width=True, height=460)
 # ---------------------------------------------------------------------------- pages
 def page_control_tower():
     flash()
