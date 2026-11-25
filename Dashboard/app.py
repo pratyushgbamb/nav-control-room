@@ -240,6 +240,16 @@ def rule_hits_display(show):
     return out.rename(columns={"Observed_Value": "Observed", "Threshold_Value": "Threshold / expected",
                                "Est_NAV_Impact_bps": "Impact (bps)"})
 
+def rupee_text(s):
+    """Rewrites paise / 1e4 amounts in older AI text as rupees."""
+    s = str(s or "")
+    s = re.sub(r"([A-Za-z_.]*?)_Paise\b(\s*[:=]?\s*)(-?\d+(?:\.\d+)?)",
+               lambda m: f"{m.group(1)}{m.group(2)}{inr(float(m.group(3)) / 100)}", s)
+    s = re.sub(r"(-?\d[\d,]*(?:\.\d+)?)\s*paise\b",
+               lambda m: inr(float(m.group(1).replace(",", "")) / 100), s, flags=re.I)
+    s = re.sub(r"([A-Za-z_.]*?)_1e4\b(\s*[:=]?\s*)(-?\d+(?:\.\d+)?)",
+               lambda m: f"{m.group(1)}{m.group(2)}{inr(float(m.group(3)) / 10000, 4)}", s)
+    return s
 
 def chip(text, color):
     return f'<span class="chip" style="background:{color}22;color:{color};border:1px solid {color}55">{text}</span>'
@@ -431,7 +441,7 @@ def evidence_panel(c, f):
     funds = [x for x in str(c.get("Fund_IDs", "")).split(",") if x and x != "ALL"]
     if str(c.get("Case_Type")) == "RELEASE":
         ai = ai_rows().get(str(c.get("Latest_AI_Call_ID")), {})
-        st.markdown(f'<div class="card"><b>Release recommendation:</b> {c.get("Final_Recommendation", "")}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><b>Release recommendation:</b> {rupee_text(c.get("Final_Recommendation", ""))}</div>', unsafe_allow_html=True)
         if ai:
             st.caption(f"AI memo confidence {ai.get('Confidence', '—')} · guardrail {ai.get('Guardrail_Applied', 'NONE')} {ai.get('Guardrail_Reason', '')}")
         cases = T("Cases")
@@ -518,7 +528,7 @@ def ai_panel(ai):
     st.progress(min(max(conf, 0.0), 1.0))
     if band == "LOW":
         st.error("AI uncertain or in disagreement with the rules: verify the evidence before approving.")
-    st.markdown(f'<div class="card"><b>Rationale.</b> {ai.get("Rationale", "")}<br><span class="small">Evidence used: '
+    st.markdown(f'<div class="card"><b>Rationale.</b> {rupee_text(ai.get("Rationale", ""))}<br><span class="small">Evidence used: '
                 f'{ai.get("Evidence_Used", "")}</span></div>', unsafe_allow_html=True)
     st.caption(f"Guardrails: {ai.get('Guardrail_Applied', 'NONE')} — {ai.get('Guardrail_Reason', '')} · Final recommendation: "
                f"{ai.get('Final_Recommendation', '')} · Model {ai.get('Model', '')} · Prompt {ai.get('Prompt_Version', '')} · "
