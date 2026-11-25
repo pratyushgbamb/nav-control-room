@@ -437,6 +437,7 @@ def run(inject=0):
     stamp = dt.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
     if len(pend):
         ledger.loc[pend.index, 'Restated'] = 1
+    ledger = ledger[ledger['Date'] != d]   # re-running the same date replaces its earlier demo errors
     new = pd.DataFrame([{**p, 'Key_ID': f'LK-{d.replace("-", "")}-{i + 1:02d}', 'Date': d, 'Restated': 0, 'Run_At': stamp}
                         for i, p in enumerate(planted)], columns=LEDGER_COLS)
     pd.concat([ledger, new], ignore_index=True)[LEDGER_COLS].to_csv(LEDGER, index=False)
