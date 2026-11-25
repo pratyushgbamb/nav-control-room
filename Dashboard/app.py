@@ -9,6 +9,8 @@ environments · fund performance analytics · real-fund (UTI Nifty 50 Index Fund
 import base64
 import hashlib
 import hmac
+import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import time
 import uuid
@@ -187,6 +189,56 @@ def nav_text(v1e4):
 def fmt_bps(v, signed=True):
     x = num(v)
     return "—" if x is None else (f"{x:+.1f} bps" if signed else f"{x:.1f} bps")
+
+def inr(x, dp=2):
+    """Rupee amount in Indian digit grouping, e.g. ₹12,34,567.89."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    neg, x = x < 0, abs(float(x))
+    whole, _, frac = f"{x:.{dp}f}".partition(".")
+    if len(whole) > 3:
+        head, tail, groups = whole[:-3], whole[-3:], []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        whole = ",".join(groups + [tail])
+    return ("−" if neg else "") + "₹" + whole + (f".{frac}" if dp else "")
+
+
+def rupeeify(df):
+    """Display copy: *_Paise columns → ₹ (2 dp), *_1e4 columns → ₹ per unit (4 dp)."""
+    out, ren = df.copy(), {}
+    for c in list(out.columns):
+        if c.endswith("_Paise"):
+            out[c] = [inr(num(v) / 100) if num(v) is not None else "—" for v in out[c]]
+            ren[c] = c[:-6].replace("_", " ") + " (₹)"
+        elif c.endswith("_1e4"):
+            out[c] = [inr(num(v) / 10000, 4) if num(v) is not None else "—" for v in out[c]]
+            ren[c] = c[:-4].replace("_", " ") + " (₹/unit)"
+    return out.rename(columns=ren)
+
+
+MONEY_RULES = {"P01", "P03", "C01", "F01", "F02"}   # rules whose observed/threshold values are paise
+
+
+def rule_hits_display(show):
+    out = show.copy()
+
+    def conv(v, rule):
+        x = num(v)
+        if rule in MONEY_RULES and x is not None:
+            return inr(x / 100)
+        if isinstance(v, str) and "prev " in v:
+            return re.sub(r"prev (\d+(?:\.\d+)?)", lambda m: "prev " + inr(float(m.group(1)) / 100), v)
+        return v
+
+    for col in ("Observed_Value", "Threshold_Value"):
+        if col in out:
+            out[col] = [str(conv(v, r)) for v, r in zip(out[col], out["Rule_ID"])]
+    return out.rename(columns={"Observed_Value": "Observed", "Threshold_Value": "Threshold / expected",
+                               "Est_NAV_Impact_bps": "Impact (bps)"})
 
 
 def chip(text, color):
@@ -397,7 +449,7 @@ def evidence_panel(c, f):
         show = f[[x for x in ["Rule_ID", "Severity", "Fund_ID", "Source", "Observed_Value", "Threshold_Value", "Est_NAV_Impact_bps"] if x in f.columns]].copy()
         show.insert(1, "Rule", show["Rule_ID"].map(names))
         st.markdown("**Why it was flagged**")
-        st.dataframe(show, hide_index=True, use_container_width=True)
+        st.dataframe(rule_hits_display(show), hide_index=True, use_container_width=True)
     if sec and sec != "ALL":
         pr = T("Prices")
         h = pr[(pr["Security_ID"] == sec) & (pr["Date"] <= d)].sort_values("Date").tail(8) if not pr.empty else pr
@@ -422,17 +474,18 @@ def evidence_panel(c, f):
             near = near[pd.to_datetime(near["Ex_Date"], errors="coerce").sub(pd.Timestamp(d)).abs() <= pd.Timedelta(days=7)]
             if not near.empty:
                 st.markdown("**Corporate actions within 7 days**")
-                st.dataframe(near, hide_index=True, use_container_width=True)
+                st.dataframe(rupeeify(near), hide_index=True, use_container_width=True)
                 bk = T("CA_Bookings")
                 if not bk.empty:
-                    st.dataframe(bk[bk["CA_ID"].isin(near["CA_ID"])], hide_index=True, use_container_width=True)
+                    st.dataframe(rupeeify(bk[bk["CA_ID"].isin(near["CA_ID"])]), hide_index=True, use_container_width=True)
     if not f.empty and f["Rule_ID"].astype(str).str.startswith("F").any():
         fe = T("Fee_Accruals")
         rows = fe[(fe["Date"] == d) & fe["Fund_ID"].isin(funds)] if not fe.empty else fe
         if not rows.empty:
             st.markdown("**Booked vs recalculated fee**")
-            st.dataframe(rows[[x for x in ["Fund_ID", "Accrual_Days", "Exp_Accrual_Days", "Basis_Net_Assets_Paise", "Prev_Net_Assets_Paise",
-                                           "Mgmt_Fee_Paise", "Recalc_Mgmt_Paise", "Diff_Mgmt_Paise"] if x in rows.columns]],
+            st.dataframe(rupeeify(rows[[x for x in ["Fund_ID", "Accrual_Days", "Exp_Accrual_Days", "Basis_Net_Assets_Paise",
+                                                    "Prev_Net_Assets_Paise", "Mgmt_Fee_Paise", "Recalc_Mgmt_Paise",
+                                                    "Diff_Mgmt_Paise"] if x in rows.columns]]),
                          hide_index=True, use_container_width=True)
     nav = T("NAV_Runs")
     ctx = nav[(nav["Date"] == d) & nav["Fund_ID"].isin(funds)] if funds else nav.iloc[0:0]
@@ -511,7 +564,7 @@ def maker_form(c, rules, ai):
             action = st.selectbox("Action taken (required for APPROVE / OVERRIDE)", ACTIONS, index=None)
         reason_code = st.selectbox("Reason code (required for OVERRIDE / ESCALATE / HOLD)", REASONS, index=None)
         reason_text = st.text_area("Reason (at least 20 characters for OVERRIDE / ESCALATE / HOLD)", height=90)
-        corrected = st.text_input("Confirmed price in paise (required: no corroborated price, rule P02/P07)") if needs_price else ""
+        corrected_rs = st.text_input("Confirmed price in ₹ per share, e.g. 1234.55 (required: no corroborated price, rule P02/P07)") if needs_price else ""
         files = st.file_uploader("Attach evidence (vendor e-mail, exchange screenshot, calculation)", accept_multiple_files=True,
                                  type=list(MIME.keys()))
         ack = st.checkbox("I reviewed the evidence, not only the AI recommendation")
@@ -525,6 +578,14 @@ def maker_form(c, rules, ai):
         except ValueError as e:
             st.error(str(e))
             return
+        corrected = ""
+        if needs_price and corrected_rs.strip():
+            try:
+                corrected = str(int((Decimal(corrected_rs.replace(",", "").replace("₹", "").strip()) * 100)
+                                    .quantize(Decimal(1), rounding=ROUND_HALF_UP)))
+            except (InvalidOperation, ValueError):
+                st.error("Enter the confirmed price in rupees, for example 1234.55.")
+                return
         with st.spinner("Recording the proposal…"):
             resp = api("decide", {"caseId": cid, "decision": decision, "finalClass": final_class or "", "action": action or "",
                                   "reasonCode": reason_code or "", "reasonText": reason_text, "correctedPrice": corrected,
@@ -544,7 +605,8 @@ def checker_panel(c):
     st.markdown(
         f'<div class="card"><b>Maker proposal {m["Review_ID"]}</b> by {who(m.get("Reviewer_Email"))} at {m.get("Timestamp")}<br>'
         f'Decision <b>{m.get("Decision")}</b> · classification <b>{m.get("Final_Classification") or "—"}</b> · '
-        f'action {m.get("Action_Taken") or "—"} · confirmed price {m.get("Corrected_Price_Paise") or "—"}<br>'
+        f'action {m.get("Action_Taken") or "—"} · confirmed price '
+        f'{inr(num(m.get("Corrected_Price_Paise")) / 100) if num(m.get("Corrected_Price_Paise")) else "—"}<br>'
         f'Reason: {m.get("Reason_Code") or ""} {m.get("Reason_Text") or ""}<br>Evidence: {ev_html}</div>', unsafe_allow_html=True)
     u = me()
     role = role_of(u)
@@ -589,7 +651,7 @@ def history_panel(cid):
     h.insert(1, "Reviewer", h["Reviewer_Email"].apply(who))
     cols = [x for x in ["Timestamp", "Reviewer", "Stage", "Decision", "Final_Classification", "Action_Taken", "Reason_Code",
                         "Reason_Text", "Valid", "Invalid_Reason", "Evidence_Count", "Evidence_SHA256", "Channel", "Review_ID"] if x in h.columns]
-    st.dataframe(h[cols].iloc[::-1], hide_index=True, use_container_width=True)
+    st.dataframe(rupeeify(h[cols].iloc[::-1]), hide_index=True, use_container_width=True)
 
 
 def render_case(cid):
@@ -1199,7 +1261,7 @@ def page_quality():
     else:
         p = po.copy()
         p["Confirmed_By"] = p["Confirmed_By"].apply(who)
-        st.dataframe(p.iloc[::-1], hide_index=True, use_container_width=True)
+        st.dataframe(rupeeify(p.iloc[::-1]), hide_index=True, use_container_width=True)
 
 
 def page_audit():
