@@ -549,6 +549,7 @@ def evidence_payload(files):
 def maker_form(c, rules, ai):
     u = me()
     role = role_of(u)
+    ai = ai or {}
     cid, status = c["Case_ID"], str(c["Status"])
     is_release = str(c.get("Case_Type")) == "RELEASE"
     if not u:
@@ -562,26 +563,49 @@ def maker_form(c, rules, ai):
         return
     needs_price = any(r in ("P02", "P07") for r in rules)
     st.markdown(f"**Maker proposal** · you are {chip(role, '#2563eb')} · a different SENIOR must confirm it", unsafe_allow_html=True)
+
+    # Decision and classification sit outside the form so the dependent fields appear immediately
+    if is_release:
+        decision = st.radio("Proposal", ["RELEASE", "HOLD"], horizontal=True, index=None, key=f"dec_{cid}")
+        final_class = ""
+    else:
+        decision = st.radio("Decision", ["APPROVE", "OVERRIDE", "ESCALATE"], horizontal=True, index=None, key=f"dec_{cid}",
+                            help="APPROVE = accept the AI classification · OVERRIDE = your own classification · ESCALATE = send to a SENIOR")
+        final_class = st.selectbox("Final classification (your own label)", LABELS, index=None, key=f"fc_{cid}") \
+            if decision == "OVERRIDE" else ""
+    ai_label = str(ai.get("Classification", ""))
+    needs_note = (final_class == "UNEXPLAINED") or (decision == "APPROVE" and ai_label == "UNEXPLAINED")
+    note = ""
+    if needs_note:
+        note = st.text_area("What is unexplained? Describe what you checked and what remains open (at least 30 characters)",
+                            key=f"ux_{cid}", height=100,
+                            placeholder="e.g. Price sources agree and no corporate action is on record, but the residual of -14 bps "
+                                        "persists after re-checking fees; awaiting custodian holdings statement.")
+        st.caption("Tip: for an unexplained case, the usual action is INVESTIGATE.")
+
     with st.form(f"maker_{cid}"):
         if is_release:
-            decision = st.radio("Proposal", ["RELEASE", "HOLD"], horizontal=True, index=None)
             action = st.selectbox("Action taken", ["RELEASE_NAV", "HOLD_NAV"], index=None)
-            final_class = ""
         else:
-            decision = st.radio("Decision", ["APPROVE", "OVERRIDE", "ESCALATE"], horizontal=True, index=None,
-                                help="APPROVE = accept the AI classification · OVERRIDE = your own classification · ESCALATE = send to a SENIOR")
-            final_class = st.selectbox("Final classification (required for OVERRIDE)", LABELS, index=None)
             action = st.selectbox("Action taken (required for APPROVE / OVERRIDE)", ACTIONS, index=None)
         reason_code = st.selectbox("Reason code (required for OVERRIDE / ESCALATE / HOLD)", REASONS, index=None)
         reason_text = st.text_area("Reason (at least 20 characters for OVERRIDE / ESCALATE / HOLD)", height=90)
-        corrected_rs = st.text_input("Confirmed price in ₹ per share, e.g. 1234.55 (required: no corroborated price, rule P02/P07)") if needs_price else ""
+        corrected_rs = st.text_input("Confirmed price in ₹ per share, e.g. 1234.55 (required: no corroborated price, rule P02/P07)") \
+            if needs_price else ""
         files = st.file_uploader("Attach evidence (vendor e-mail, exchange screenshot, calculation)", accept_multiple_files=True,
                                  type=list(MIME.keys()))
         ack = st.checkbox("I reviewed the evidence, not only the AI recommendation")
         submit = st.form_submit_button("Submit for checker approval", type="primary")
+
     if submit:
         if not decision:
             st.error("Choose a decision.")
+            return
+        if decision == "OVERRIDE" and not final_class:
+            st.error("Choose your final classification.")
+            return
+        if needs_note and len(note.strip()) < 30:
+            st.error("Describe what is unexplained (at least 30 characters).")
             return
         try:
             ev = evidence_payload(files)
@@ -596,9 +620,10 @@ def maker_form(c, rules, ai):
             except (InvalidOperation, ValueError):
                 st.error("Enter the confirmed price in rupees, for example 1234.55.")
                 return
+        full_reason = reason_text.strip() + (f"\n[Unexplained detail] {note.strip()}" if needs_note else "")
         with st.spinner("Recording the proposal…"):
             resp = api("decide", {"caseId": cid, "decision": decision, "finalClass": final_class or "", "action": action or "",
-                                  "reasonCode": reason_code or "", "reasonText": reason_text, "correctedPrice": corrected,
+                                  "reasonCode": reason_code or "", "reasonText": full_reason, "correctedPrice": corrected,
                                   "evidenceChecked": ack, "evidence": ev, "email": u["email"], "channel": "DASHBOARD"}, timeout=180)
         finish(resp, f"Proposal {resp.get('reviewId', '')} recorded: case {cid} is now {resp.get('status', '')}.")
 
@@ -1008,11 +1033,13 @@ def page_cases():
            ("Awaiting checker", int((base["Status"] == "PENDING_CHECK").sum()) if not base.empty else 0, "maker proposals", "#7c3aed"),
            ("No AI result", n - ok, "decide from evidence (G4)", "#64748b"),
            ("Oldest open", age_text(created.min()) if created.notna().any() else "—", "since case creation", "#0891b2"),
-           ("Largest impact", "—" if imp_open.dropna().empty else f"{imp_open.max():.1f} bps", "open cases", "#3b82f6")])
+           ("Largest potential impact", "—" if imp_open.dropna().empty else f"{imp_open.max():,.0f} bps",
+            "if the flagged value had been used", "#3b82f6")])
 
     q = base[base["Status"].isin(statuses) & base["Max_Severity"].isin(sev)].copy()
     if fund != "All" and not q.empty:
         q = q[q["Fund_IDs"].astype(str).str.split(",").apply(lambda x: fund in x)]
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
     left, right = st.columns([4, 6])
     sel_id = None
     with left:
@@ -1048,6 +1075,7 @@ def page_cases():
         if sel_id:
             render_case(sel_id)
         else:
+            st.markdown("**Case detail**")
             st.markdown('<div class="card">Select a case in the queue to open its evidence, AI recommendation and decision form.</div>',
                         unsafe_allow_html=True)
 
@@ -1224,8 +1252,8 @@ def page_realfund():
           ("Max |difference|", f"{fin['Tracking_Diff_bps'].abs().max():.1f} bps" if len(fin) else "—", f"threshold ±{thr:.0f} bps"),
           ("Breaks", int((fin["Status"] == "BREAK").sum()), "days above threshold")])
     f1 = go.Figure()
-    f1.add_trace(go.Scatter(x=rf["Date"], y=rf["Official_NAV"], name="Official NAV (AMFI)", line=dict(color="#111827", width=2)))
-    f1.add_trace(go.Scatter(x=rf["Date"], y=rf["Shadow_NAV"], name="Shadow NAV (our calculation)", line=dict(color="#2563eb", dash="dot")))
+    f1.add_trace(go.Scatter(x=rf["Date"], y=rf["Official_NAV"], name="Official NAV (AMFI)", line=dict(color="#f59e0b", width=2.5)))
+    f1.add_trace(go.Scatter(x=rf["Date"], y=rf["Shadow_NAV"], name="Shadow NAV (our calculation)", line=dict(color="#60a5fa", width=2, dash="dot")))
     f1.update_layout(height=340, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=-0.2), yaxis_title="₹ per unit")
     st.plotly_chart(f1, use_container_width=True)
     f2 = go.Figure(go.Bar(x=fin["Date"], y=fin["Tracking_Diff_bps"],
