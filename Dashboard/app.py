@@ -43,7 +43,7 @@ TABS = {"Funds": "Fund_ID", "NAV_Runs": "Run_Key", "Cases": "Case_ID", "AI_Decis
         "Release_Log": "Release_ID", "Reviewers": "Reviewer_Email", "NAV_Snapshots": "Snapshot_Key", "Price_Overrides": "Price_Key",
         "Calendar": "Date", "Run_Log": "Run_ID", "Flags": "Flag_ID", "RealFund_NAV": "RF_Key", "Prices": "Price_Key",
         "Positions": "Position_Key", "CorpActions": "CA_ID", "CA_Bookings": "Booking_ID", "Fee_Accruals": "Accrual_Key",
-        "Rule_Catalogue": "Rule_ID"}
+        "Rule_Catalogue": "Rule_ID", "Config": "Param_Key"}
 DATE_COLS = {"Date", "Prev_Business_Day", "Ex_Date", "Pay_Date"}
 TS_COLS = {"Timestamp", "Approved_At", "Start_Time", "End_Time", "Created_At", "Closed_At", "Called_At", "Captured_At",
            "Confirmed_At", "Computed_At", "Expected_Frozen_At"}
@@ -1272,35 +1272,173 @@ def page_realfund():
 
 
 def page_quality():
-    header("Data Quality", "Where the exceptions come from and how prices were selected")
-    fl, pr, ai, po = T("Flags"), T("Prices"), T("AI_Decisions"), T("Price_Overrides")
-    if not fl.empty:
-        pv = fl.pivot_table(index="Rule_ID", columns="Date", values="Flag_ID", aggfunc="count", fill_value=0)
-        fh = go.Figure(go.Heatmap(z=pv.values, x=list(pv.columns), y=list(pv.index), colorscale="Reds", hoverongaps=False))
-        fh.update_layout(height=420, title="Rule hits by date", margin=dict(l=10, r=10, t=50, b=10))
-        st.plotly_chart(fh, use_container_width=True)
-    c1, c2 = st.columns(2)
-    if not pr.empty and "Selected_Source" in pr:
-        mix = pr[pr["Selected_Source"].astype(str) != "A"].groupby(["Date", "Selected_Source"]).size().reset_index(name="n")
-        fm = go.Figure([go.Bar(x=g["Date"], y=g["n"], name=k) for k, g in mix.groupby("Selected_Source")])
-        fm.update_layout(barmode="stack", height=300, title="Securities not priced from Source A", margin=dict(l=10, r=10, t=50, b=10))
-        c1.plotly_chart(fm, use_container_width=True)
-    if not ai.empty:
-        case_ai = ai[ai["Call_Type"] == "CASE"]
-        col = "HTTP_Status_History" if "HTTP_Status_History" in case_ai else "HTTP_Status"
-        codes = case_ai[col].astype(str).str.replace("|", ",", regex=False).str.split(",").explode().str.strip()
-        codes = codes[codes != ""].value_counts()
-        fc = go.Figure(go.Bar(x=codes.index.astype(str), y=codes.values, marker_color="#7c3aed"))
-        fc.update_layout(height=300, title="AI call outcomes (HTTP status per attempt)", margin=dict(l=10, r=10, t=50, b=10))
-        c2.plotly_chart(fc, use_container_width=True)
-    st.markdown("#### Reviewer-confirmed prices (G2)")
-    if po.empty:
-        st.caption("None.")
-    else:
-        p = po.copy()
-        p["Confirmed_By"] = p["Confirmed_By"].apply(who)
-        st.dataframe(rupeeify(p.iloc[::-1]), hide_index=True, use_container_width=True)
+DQ_VIEWS = ["📊 Source scorecard", "🔎 Security drill-down", "📅 Exceptions over time"]
+SRC_COLOR = {"A": "#3b82f6", "B": "#16a34a", "C": "#f59e0b"}
+SRC_NAME = {"A": "A · exchange close (primary)", "B": "B · vendor feed", "C": "C · vendor feed"}
+SEL_COLOR = {"A": "#3b82f6", "MEDIAN": "#a78bfa", "B": "#16a34a", "C": "#f59e0b", "REVIEWER": "#22d3ee", "NONE": "#dc2626"}
+PRICE_RULES = [("P01", "Missing"), ("P03", "Stale"), ("P04", "Fat-finger"), ("P05", "Variance")]
 
+
+def cfg_value(key, default):
+    cfg = T("Config")
+    if cfg.empty or "Value" not in cfg:
+        return default
+    v = cfg.loc[cfg["Param_Key"] == key, "Value"]
+    x = num(v.iloc[0]) if len(v) else None
+    return default if x is None else x
+
+
+def page_quality():
+    flash()
+    pr, fl, cal = T("Prices"), T("Flags"), T("Calendar")
+    if pr.empty:
+        st.info("No price data yet.")
+        return
+    dates = sorted(d for d in pr["Date"].unique() if d)
+    role = cal.get("Day_Role", pd.Series("", index=cal.index)) if not cal.empty else pd.Series(dtype=str)
+    test = sorted(d for d in cal.loc[role == "TEST", "Date"] if d in set(dates)) if not cal.empty else []
+    default = (test[0], test[-1]) if test else (dates[0], dates[-1])
+    c1, c2 = st.columns([6, 4])
+    d0, d1 = c1.select_slider("Period", options=dates, value=default, key="dq_period")
+    view = c2.segmented_control("View", DQ_VIEWS, default=DQ_VIEWS[0], key="dq_view") or DQ_VIEWS[0]
+    tol = cfg_value("PRICE_VAR_TOL_BPS", 30.0)
+    p = pr[(pr["Date"] >= d0) & (pr["Date"] <= d1)].copy()
+    f = fl[(fl["Date"] >= d0) & (fl["Date"] <= d1)].copy() if not fl.empty else fl
+    cm = numcol(p, "Clean_Median")
+    for s in "ABC":
+        p[f"dev_{s}"] = (numcol(p, f"Price_{s}_Paise") - cm).abs() / cm * 10000
+    st.caption("Price levels show the final state after next-day vendor restatements; exception counts are as captured on the day. "
+               f"Consensus = median of valid, non-stale, non-fat-finger sources; tolerance ±{tol:.0f} bps.")
+    if view == DQ_VIEWS[0]:
+        dq_scorecard(p, f, tol)
+    elif view == DQ_VIEWS[1]:
+        dq_drilldown(p, f, tol)
+    else:
+        dq_timeline(p, f)
+
+
+def dq_scorecard(p, f, tol):
+    n = len(p)
+    sel = p["Selected_Source"].astype(str) if "Selected_Source" in p else pd.Series("", index=p.index)
+    agree = ((p["dev_A"] <= tol) & (p["dev_B"] <= tol) & (p["dev_C"] <= tol)).mean() * 100 if n else 0.0
+    rows = []
+    for s in "ABC":
+        valid = p[f"Valid_{s}"].apply(truthy) if f"Valid_{s}" in p else numcol(p, f"Price_{s}_Paise").notna()
+        dev = p[f"dev_{s}"].dropna()
+        fs = f[f["Source"] == s] if not f.empty else f
+        r = {"Source": SRC_NAME[s],
+             "Availability %": round(valid.mean() * 100, 2) if n else None,
+             "Median |dev| bps": round(dev.median(), 2) if len(dev) else None,
+             "95th pct |dev| bps": round(dev.quantile(0.95), 2) if len(dev) else None,
+             "Within tolerance %": round((dev <= tol).mean() * 100, 2) if len(dev) else None}
+        for rid, nm in PRICE_RULES:
+            r[nm] = int((fs["Rule_ID"] == rid).sum()) if not fs.empty else 0
+        r["Exceptions / 1,000 prices"] = round(len(fs) / n * 1000, 2) if n else None
+        rows.append(r)
+    sc = pd.DataFrame(rows)
+    vend = sc.iloc[1:]
+    best = vend.loc[vend["Exceptions / 1,000 prices"].idxmin(), "Source"].split(" ·")[0] if len(vend) and vend["Exceptions / 1,000 prices"].notna().any() else "—"
+    tiles([("Prices compared", f"{n:,}", f"{p['Security_ID'].nunique()} securities × {p['Date'].nunique()} days", "#3b82f6"),
+           ("All three agree", f"{agree:.1f}%", f"within ±{tol:.0f} bps of consensus", "#16a34a"),
+           ("Primary (A) used", f"{(sel == 'A').mean() * 100:.1f}%" if n else "—", "exchange close selected", "#3b82f6"),
+           ("Vendor fallback", f"{sel.isin(['MEDIAN', 'B', 'C']).mean() * 100:.1f}%" if n else "—", "A excluded, B/C used", "#d97706"),
+           ("No price selected", int((sel == "NONE").sum()), "needed reviewer confirmation", "#dc2626"),
+           ("Most reliable vendor", best, "fewest exceptions per 1,000 prices", "#a78bfa")])
+    st.markdown("**Source scorecard**")
+    st.dataframe(sc, hide_index=True, use_container_width=True, column_config={
+        "Availability %": st.column_config.ProgressColumn("Availability %", min_value=0.0, max_value=100.0, format="%.2f"),
+        "Within tolerance %": st.column_config.ProgressColumn("Within tolerance %", min_value=0.0, max_value=100.0, format="%.2f")})
+    g1, g2 = st.columns(2)
+    fb = go.Figure([go.Box(y=p[f"dev_{s}"].clip(upper=100), name=s, marker_color=SRC_COLOR[s], boxmean=True, boxpoints=False)
+                    for s in "ABC"])
+    fb.add_hline(y=tol, line_dash="dot", line_color="#dc2626")
+    g1.plotly_chart(style(fb, 320, f"Distance from consensus (bps, capped at 100) · red line = tolerance"),
+                    use_container_width=True, config={"displayModeBar": False})
+    fe = go.Figure([go.Bar(x=list("ABC"), y=[int(((f["Source"] == s) & (f["Rule_ID"] == rid)).sum()) if not f.empty else 0 for s in "ABC"],
+                           name=nm) for rid, nm in PRICE_RULES])
+    fe.update_layout(barmode="stack")
+    g2.plotly_chart(style(fe, 320, "Exceptions by source and type"), use_container_width=True, config={"displayModeBar": False})
+    g3, g4 = st.columns(2)
+    daily = p.groupby("Date")[["dev_A", "dev_B", "dev_C"]].median()
+    fd = go.Figure([go.Scatter(x=daily.index, y=daily[f"dev_{s}"], name=s, line=dict(color=SRC_COLOR[s], width=2)) for s in "ABC"])
+    fd.add_hline(y=tol, line_dash="dot", line_color="#dc2626")
+    g3.plotly_chart(style(fd, 300, "Daily median distance from consensus (bps)"), use_container_width=True, config={"displayModeBar": False})
+    if n:
+        mix = pd.crosstab(p["Date"], sel, normalize="index") * 100
+        fm = go.Figure([go.Bar(x=mix.index, y=mix[c], name=c, marker_color=SEL_COLOR.get(c, "#64748b")) for c in mix.columns])
+        fm.update_layout(barmode="stack")
+        fm.update_yaxes(title="% of securities")
+        g4.plotly_chart(style(fm, 300, "Which source priced the NAV each day"), use_container_width=True, config={"displayModeBar": False})
+
+
+def dq_drilldown(p, f, tol):
+    fs = f[f["Rule_ID"].astype(str).str.startswith("P")] if not f.empty else f
+    counts = fs.groupby("Security_ID").size().sort_values(ascending=False) if not fs.empty else pd.Series(dtype=int)
+    secs = list(counts.index) + sorted(set(p["Security_ID"]) - set(counts.index))
+    if not secs:
+        st.info("No securities in this period.")
+        return
+    sec = st.selectbox("Security", secs, format_func=lambda s: f"{s} · {int(counts.get(s, 0))} exception(s)", key="dq_sec")
+    h = p[p["Security_ID"] == sec].sort_values("Date")
+    fsec = fs[fs["Security_ID"] == sec] if not fs.empty else fs
+    tiles([("Days", len(h), "in period", "#3b82f6"),
+           ("Exceptions", len(fsec), "price rules P01–P07", "#d97706")] +
+          [(f"Max |dev| {s}", "—" if h[f"dev_{s}"].dropna().empty else f"{h[f'dev_{s}'].max():,.1f} bps", SRC_NAME[s].split(" · ")[1], SRC_COLOR[s])
+           for s in "ABC"])
+    fig = go.Figure([go.Scatter(x=h["Date"], y=numcol(h, f"Price_{s}_Paise") / 100, name=f"Source {s}", mode="lines+markers",
+                                line=dict(color=SRC_COLOR[s], width=2)) for s in "ABC"])
+    fig.add_trace(go.Scatter(x=h["Date"], y=numcol(h, "Selected_Price_Paise") / 100, name="Selected", mode="markers",
+                             marker=dict(symbol="diamond-open", size=11, color="#e5e7eb", line=dict(width=2))))
+    fig.update_yaxes(title="₹ per share")
+    st.plotly_chart(style(fig, 340, f"{sec}: price by source (final state)"), use_container_width=True, config={"displayModeBar": False})
+    fd = go.Figure([go.Bar(x=h["Date"], y=h[f"dev_{s}"].clip(upper=100), name=s, marker_color=SRC_COLOR[s]) for s in "ABC"])
+    fd.add_hline(y=tol, line_dash="dot", line_color="#dc2626")
+    fd.update_layout(barmode="group")
+    st.plotly_chart(style(fd, 280, f"{sec}: distance from consensus by day (bps, capped at 100)"),
+                    use_container_width=True, config={"displayModeBar": False})
+    st.markdown("**Exceptions captured on the day**")
+    if fsec.empty:
+        st.caption("None in this period.")
+    else:
+        cols = [x for x in ["Date", "Rule_ID", "Source", "Observed_Value", "Threshold_Value", "Est_NAV_Impact_bps", "Case_ID"] if x in fsec.columns]
+        st.dataframe(rule_hits_display(fsec[cols].sort_values("Date")), hide_index=True, use_container_width=True)
+
+
+def dq_timeline(p, f):
+    if f.empty:
+        st.info("No exceptions in this period.")
+        return
+    fp = f.copy()
+    fp["Src"] = fp["Source"].where(fp["Source"].isin(list("ABC")), "Non-price rules")
+    ct = pd.crosstab(fp["Date"], fp["Src"])
+    colors = {**SRC_COLOR, "Non-price rules": "#64748b"}
+    fig = go.Figure([go.Bar(x=ct.index, y=ct[c], name=c, marker_color=colors.get(c, "#64748b")) for c in ct.columns])
+    fig.update_layout(barmode="stack")
+    st.plotly_chart(style(fig, 320, "Exceptions per day by source"), use_container_width=True, config={"displayModeBar": False})
+    with st.expander("Rule hits by date (heatmap)"):
+        pv = f.pivot_table(index="Rule_ID", columns="Date", values="Flag_ID", aggfunc="count", fill_value=0)
+        fh = go.Figure(go.Heatmap(z=pv.values, x=list(pv.columns), y=list(pv.index), colorscale="Reds", hoverongaps=False))
+        st.plotly_chart(style(fh, 380), use_container_width=True, config={"displayModeBar": False})
+    with st.expander("Reviewer-confirmed prices (G2)"):
+        po = T("Price_Overrides")
+        if po.empty:
+            st.caption("None.")
+        else:
+            q = po.copy()
+            q["Confirmed_By"] = q["Confirmed_By"].apply(who)
+            st.dataframe(rupeeify(q.iloc[::-1]), hide_index=True, use_container_width=True)
+    with st.expander("AI service reliability"):
+        ai = T("AI_Decisions")
+        if ai.empty:
+            st.caption("No AI calls yet.")
+        else:
+            case_ai = ai[ai["Call_Type"] == "CASE"]
+            col = "HTTP_Status_History" if "HTTP_Status_History" in case_ai else "HTTP_Status"
+            codes = case_ai[col].astype(str).str.replace("|", ",", regex=False).str.split(",").explode().str.strip()
+            codes = codes[codes != ""].value_counts()
+            fc = go.Figure(go.Bar(x=codes.index.astype(str), y=codes.values, marker_color="#a78bfa"))
+            st.plotly_chart(style(fc, 280, "AI call outcomes (HTTP status per attempt)"), use_container_width=True,
+                            config={"displayModeBar": False})
 
 def page_audit():
     header("Audit Trail", "Who did what, when and why: runs, AI calls, maker-checker decisions, confirmed prices and releases")
