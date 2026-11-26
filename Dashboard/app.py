@@ -1271,7 +1271,6 @@ def page_realfund():
             "- The TER is a configurable input; confirm it from the AMC's latest TER disclosure.")
 
 
-def page_quality():
 DQ_VIEWS = ["📊 Source scorecard", "🔎 Security drill-down", "📅 Exceptions over time"]
 SRC_COLOR = {"A": "#3b82f6", "B": "#16a34a", "C": "#f59e0b"}
 SRC_NAME = {"A": "A · exchange close (primary)", "B": "B · vendor feed", "C": "C · vendor feed"}
