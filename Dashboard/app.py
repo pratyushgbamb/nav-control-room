@@ -562,6 +562,7 @@ def maker_form(c, rules, ai):
         st.info("This case was escalated: only a SENIOR can act as maker.")
         return
     needs_price = any(r in ("P02", "P07") for r in rules)
+    allow_price = needs_price or (str(c.get("Level")) == "SECURITY" and any(str(r).startswith("P") for r in rules))
     st.markdown(f"**Maker proposal** · you are {chip(role, '#2563eb')} · a different SENIOR must confirm it", unsafe_allow_html=True)
 
     # Decision and classification sit outside the form so the dependent fields appear immediately
@@ -590,8 +591,10 @@ def maker_form(c, rules, ai):
             action = st.selectbox("Action taken (required for APPROVE / OVERRIDE)", ACTIONS, index=None)
         reason_code = st.selectbox("Reason code (required for OVERRIDE / ESCALATE / HOLD)", REASONS, index=None)
         reason_text = st.text_area("Reason (at least 20 characters for OVERRIDE / ESCALATE / HOLD)", height=90)
-        corrected_rs = st.text_input("Confirmed price in ₹ per share, e.g. 1234.55 (required: no corroborated price, rule P02/P07)") \
-            if needs_price else ""
+        corrected_rs = st.text_input(
+            "Confirmed price in ₹ per share, e.g. 1234.55 — " +
+            ("REQUIRED: no corroborated price (rule P02/P07)" if needs_price
+             else "OPTIONAL: only if the system's selected price is wrong (give the reason below)")) if allow_price else ""
         files = st.file_uploader("Attach evidence (vendor e-mail, exchange screenshot, calculation)", accept_multiple_files=True,
                                  type=list(MIME.keys()))
         ack = st.checkbox("I reviewed the evidence, not only the AI recommendation")
@@ -613,7 +616,7 @@ def maker_form(c, rules, ai):
             st.error(str(e))
             return
         corrected = ""
-        if needs_price and corrected_rs.strip():
+        if allow_price and corrected_rs.strip():
             try:
                 corrected = str(int((Decimal(corrected_rs.replace(",", "").replace("₹", "").strip()) * 100)
                                     .quantize(Decimal(1), rounding=ROUND_HALF_UP)))
