@@ -1613,11 +1613,134 @@ def page_executive():
                             f'differs from the official AMFI NAV by <b>{td.mean():.1f} bps on average</b> over {td.notna().sum()} days.</div>',
                             unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------- Ask the Desk (read-only assistant)
+ASSIST_SYSTEM = """You are the NAV desk assistant inside the NAV Control Room dashboard of an Indian mutual fund house.
+Answer ONLY from the DATA snapshot supplied in the conversation. If the answer is not in the data, say so plainly.
+You are read-only: you cannot approve, override, confirm prices or release NAVs. When an action is needed, say which
+dashboard page to use (Review Cases, Second Approval, Publish NAV, Control Tower).
+Write for a busy operations professional: short, specific, plain business language, no rule codes. Quote fund IDs,
+case IDs, NAVs in rupees (4 decimals) and moves in basis points or percent as given. Never give investment advice.
+The AI recommendations in the data are advisory; people make every decision through maker-checker review."""
+
+SUGGESTED_QUESTIONS = ["Summarise today for the head of operations", "Why is any fund blocked or not yet published?",
+                       "What needs my action right now?", "Which issues are critical, and what did the AI conclude?"]
+
+
+def cfg_text(key, default=""):
+    cfg = T("Config")
+    if cfg.empty or "Value" not in cfg:
+        return default
+    v = cfg.loc[cfg["Param_Key"] == key, "Value"]
+    return str(v.iloc[0]).strip() if len(v) and str(v.iloc[0]).strip() else default
+
+
+def build_chat_context():
+    nav, funds, cases = T("NAV_Runs"), T("Funds"), T("Cases")
+    names = dict(zip(funds["Fund_ID"], funds["Fund_Name"])) if not funds.empty else {}
+    day = nav[nav["Date"] == SEL_DATE] if not nav.empty else nav
+    fund_rows = []
+    for _, r in day.iterrows():
+        nv = num(r.get("NAV_1e4"))
+        fund_rows.append({"fund": r["Fund_ID"], "name": names.get(r["Fund_ID"], ""),
+                          "nav_rs": None if nv is None else round(nv / 10000, 4), "change_bps": num(r.get("NAV_Change_bps")),
+                          "status": FUND_STATUS_PLAIN.get(str(r.get("Fund_Day_Status", "")).upper(), r.get("Fund_Day_Status")),
+                          "vs_expected_bps": num(r.get("Dev_vs_Expected_bps")), "expected_band_bps": num(r.get("Band_bps")),
+                          "admin_break_bps": num(r.get("Admin_Break_bps"))})
+    cday = cases[cases["Date"] == SEL_DATE] if not cases.empty else cases
+    ai, rv = ai_rows(), T("Reviews")
+    rmap = {str(r["Review_ID"]): r for r in rv.to_dict("records")} if not rv.empty else {}
+    case_rows = []
+    for _, c in cday.iterrows():
+        a = ai.get(str(c.get("Latest_AI_Call_ID")), {})
+        m = rmap.get(str(c.get("Pending_Review_ID", "")), {})
+        case_rows.append({"case": c["Case_ID"], "kind": "release" if str(c.get("Case_Type")) == "RELEASE" else "issue",
+                          "issue": plain_rule(c.get("Root_Rule_ID")), "severity": "critical" if str(c.get("Max_Severity")) == "HARD" else "warning",
+                          "status": CASE_STATUS_PLAIN.get(str(c.get("Status")), c.get("Status")), "funds": c.get("Fund_IDs"),
+                          "security": c.get("Security_ID"), "est_impact_bps": num(c.get("Est_NAV_Impact_bps")),
+                          "ai_view": plain_label(a.get("Classification")), "ai_confidence": num(a.get("Confidence")),
+                          "ai_rationale": str(a.get("Rationale", ""))[:300],
+                          "pending_proposal": ({"maker": who(m.get("Reviewer_Email")), "decision": m.get("Decision")} if m else None)})
+    rel = T("Release_Log")
+    rels = [{"fund": r["Fund_ID"], "decision": r.get("Decision"), "nav_rs": (num(r.get("NAV_1e4_Released")) or 0) / 10000 or None,
+             "checker": who(r.get("Approved_By")), "at": r.get("Approved_At")}
+            for _, r in rel[rel["Date"] == SEL_DATE].iterrows()] if not rel.empty else []
+    ev = events()
+    rf = T("RealFund_NAV")
+    rf_last = rf.sort_values("Date").iloc[-1][["Date", "Official_NAV", "Shadow_NAV", "Tracking_Diff_bps", "Status"]].to_dict() if not rf.empty else None
+    u = me()
+    return {"environment": ENV.get("label", env_key), "nav_date": SEL_DATE, "now_ist": datetime.now(IST).strftime("%Y-%m-%d %H:%M"),
+            "publication_deadline": "23:00 IST", "user": ({"name": u["name"] or u["email"], "role": role_of(u)} if u else None),
+            "funds": fund_rows, "cases": case_rows, "releases": rels,
+            "recent_activity": ev.head(12).to_dict("records") if not ev.empty else [], "real_fund_latest": rf_last}
+
+
+def gemini_chat(history, context):
+    key = _secret("gemini_api_key")
+    model = (_secret("gemini_model") or cfg_text("AI_MODEL")).replace("models/", "").strip()
+    if not key or not model:
+        return "⚠️ The assistant is not configured (gemini_api_key / gemini_model missing in Streamlit secrets)."
+    contents = [{"role": "user", "parts": [{"text": "DATA snapshot (JSON):\n" + json.dumps(context, default=str)[:30000]}]},
+                {"role": "model", "parts": [{"text": "Understood. I will answer only from this data."}]}]
+    for m in history[-10:]:
+        contents.append({"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]})
+    body = {"systemInstruction": {"parts": [{"text": ASSIST_SYSTEM}]}, "contents": contents,
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048}}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    for attempt in range(2):
+        try:
+            r = requests.post(url, headers={"x-goog-api-key": key, "Content-Type": "application/json"}, json=body, timeout=60)
+        except Exception as e:  # noqa: BLE001
+            return f"⚠️ The assistant could not be reached ({type(e).__name__})."
+        if r.status_code == 200:
+            try:
+                parts = r.json()["candidates"][0]["content"]["parts"]
+                return "".join(p.get("text", "") for p in parts).strip() or "I could not form an answer from today's data."
+            except Exception:  # noqa: BLE001
+                return "⚠️ The assistant returned an unexpected response; please ask again."
+        if r.status_code in (429, 500, 503) and attempt == 0:
+            time.sleep(4)
+            continue
+        return f"⚠️ The assistant is unavailable right now (HTTP {r.status_code}). Please try again shortly."
+
+
+def page_assistant():
+    st.markdown("### 💬 Ask the Desk")
+    st.caption(f"Read-only assistant · answers from {ENV.get('label', env_key)} data for {SEL_DATE or '—'} · "
+               "it cannot approve, change prices or release NAVs.")
+    if not _secret("gemini_api_key"):
+        st.info("Add `gemini_api_key` (and `gemini_model`) to the Streamlit secrets to enable the assistant.")
+        return
+    key = f"chat_{env_key}_{SEL_DATE}"
+    hist = st.session_state.setdefault(key, [])
+    prompt = None
+    cols = st.columns(len(SUGGESTED_QUESTIONS))
+    for col, q in zip(cols, SUGGESTED_QUESTIONS):
+        if col.button(q, use_container_width=True, key=f"sq_{q}"):
+            prompt = q
+    for m in hist:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+    typed = st.chat_input("Ask about today's NAVs, issues, approvals or releases…")
+    prompt = typed or prompt
+    if prompt:
+        hist.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("Reading today's data…"):
+                ans = gemini_chat(hist, build_chat_context())
+            st.markdown(ans)
+        hist.append({"role": "assistant", "content": ans})
+    if hist and st.button("Clear conversation"):
+        st.session_state.pop(key, None)
+        st.rerun()
+
 # ---------------------------------------------------------------------------- navigation
 brand_header()
 pg = st.navigation({
     "Overview": [st.Page(page_executive, title="Executive Summary", icon="⭐", default=True),
-                 st.Page(page_control_tower, title="Control Tower", icon="🛰️")],
+                 st.Page(page_control_tower, title="Control Tower", icon="🛰️"),
+                 st.Page(page_assistant, title="Ask the Desk", icon="💬")],
     "Operate": [st.Page(page_cases, title="Review Cases", icon="🧾"),
                 st.Page(page_checker, title="Second Approval", icon="✅"),
                 st.Page(page_release, title="Publish NAV", icon="🚦")],
