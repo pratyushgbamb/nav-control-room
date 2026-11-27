@@ -1614,14 +1614,16 @@ def page_executive():
                             unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------- navigation
+brand_header()
 pg = st.navigation({
-    "Operate": [st.Page(page_control_tower, title="Control Tower", icon="🛰️", default=True),
-                st.Page(page_cases, title="Case Workbench", icon="🧾"),
-                st.Page(page_checker, title="Checker Queue", icon="✅"),
-                st.Page(page_release, title="Release Desk", icon="🚦")],
+    "Overview": [st.Page(page_executive, title="Executive Summary", icon="⭐", default=True),
+                 st.Page(page_control_tower, title="Control Tower", icon="🛰️")],
+    "Operate": [st.Page(page_cases, title="Review Cases", icon="🧾"),
+                st.Page(page_checker, title="Second Approval", icon="✅"),
+                st.Page(page_release, title="Publish NAV", icon="🚦")],
     "Analyse": [st.Page(page_performance, title="Fund Performance", icon="📈"),
                 st.Page(page_realfund, title="Real-Fund Check", icon="🏛️"),
-                st.Page(page_quality, title="Data Quality", icon="🧪")],
+                st.Page(page_quality, title="Price Sources", icon="🧪")],
     "Govern": [st.Page(page_audit, title="Audit Trail", icon="🗂️")],
 })
 pg.run()
