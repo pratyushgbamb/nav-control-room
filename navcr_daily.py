@@ -150,7 +150,7 @@ def yf_download(tickers, start, end):
     import yfinance as yf
     for attempt in range(3):
         raw = yf.download(tickers, start=start, end=end, auto_adjust=False, actions=True,
-                          progress=False, group_by='column', threads=True)
+                          progress=False, group_by='column', threads=False)
         if raw is not None and len(raw):
             return raw
         time.sleep(15)
@@ -280,6 +280,35 @@ def load_ledger():
         return df
     return pd.DataFrame(columns=LEDGER_COLS)
 
+def fill_missing_closes(close, vol, D, tick, secs):
+    """Re-fetches, one ticker at a time, any security missing a close on day D. Returns the ones still missing."""
+    import yfinance as yf
+    missing = [s for s in secs if pd.isna(close.at[D, tick[s]])]
+    for attempt in range(3):
+        if not missing:
+            break
+        print(f'Attempt {attempt + 1}: re-fetching {missing}')
+        time.sleep(5 * (attempt + 1))
+        still = []
+        for s in missing:
+            t = tick[s]
+            try:
+                h = yf.Ticker(t).history(start=(D - pd.Timedelta(days=7)).strftime('%Y-%m-%d'),
+                                         end=(D + pd.Timedelta(days=1)).strftime('%Y-%m-%d'),
+                                         auto_adjust=False, actions=False)
+                if h.index.tz is not None:
+                    h.index = h.index.tz_localize(None)
+                row = h[h.index.normalize() == D.normalize()]
+                if len(row) and not pd.isna(row['Close'].iloc[-1]):
+                    close.at[D, t] = float(row['Close'].iloc[-1])
+                    vol.at[D, t] = float(row['Volume'].iloc[-1]) if 'Volume' in row else 0
+                    continue
+            except Exception as e:  # noqa: BLE001
+                print(f'  {s}: {type(e).__name__}: {e}')
+            still.append(s)
+            time.sleep(1)
+        missing = still
+    return missing
 
 def run(inject=0):
     state = api('state', {})['state']
@@ -303,9 +332,14 @@ def run(inject=0):
         return
     D = cand[0]
     d = D.strftime('%Y-%m-%d')
-    miss = [s for s in secs if pd.isna(close.at[D, tick[s]])]
+    for t in tick.values():                       # a dropped ticker may be missing as a column altogether
+        if t not in close.columns:
+            close[t] = np.nan
+        if t not in vol.columns:
+            vol[t] = 0
+    miss = fill_missing_closes(close, vol, D, tick, secs)
     if miss:
-        sys.exit(f'Yahoo has no close for {miss} on {d}; the 20:15 run will retry.')
+        sys.exit(f'Yahoo still has no close for {miss} on {d} after 3 retries; the 20:15 run will try again.')
     gap = (D - pd.Timestamp(last)).days
 
     funds = [f['Fund_ID'] for f in state['funds']]
