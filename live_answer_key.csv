@@ -1,1 +1,3 @@
 Key_ID,Date,Type,Fund_ID,Security_ID,Source,True_Value,Planted_Value,NA_Effect_Paise,Restated,Clean_Row,Run_At
+LK-20261126-01,2026-11-26,FEE_TWICE,F3,,,"{""Mgmt"": 14517022}","{""Mgmt"": 29034044}",-14517022,0,"{""Accrual_Days"": 1, ""Basis"": 392497250201, ""Mgmt"": 14517022}",2026-11-27 15:19:24
+LK-20261126-02,2026-11-26,FAT_C,"F4,F5",BRITANNIA,C,"{""C"": 518771}","{""C"": 5187710}",0,0,"{""A"": 518500, ""B"": 518543, ""C"": 518771, ""V"": 836453}",2026-11-27 15:19:24
