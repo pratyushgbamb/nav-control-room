@@ -32,6 +32,30 @@ LABELS = ["STALE_PRICE", "FAT_FINGER", "SOURCE_VARIANCE", "MISSING_PRICE", "UNPR
           "FEE_ERROR", "GENUINE_MARKET_MOVE", "BENIGN_NOISE", "UNEXPLAINED"]
 ACTIONS = ["USE_SELECTED_PRICE", "CONFIRM_PRICE_MANUALLY", "BOOK_CORPORATE_ACTION", "RECALCULATE_FEE", "NO_ACTION", "INVESTIGATE"]
 REASONS = ["VENDOR_ERROR", "CA_MISSED", "FEE_SETUP", "GENUINE_MOVE", "AI_MISREAD_EVIDENCE", "NEEDS_SENIOR", "CLEAN_RELEASE", "OTHER"]
+RULE_PLAIN = {
+    "P01": "Missing price", "P02": "No valid price", "P03": "Stale price", "P04": "Fat-finger price",
+    "P05": "Sources disagree", "P06": "Large price move", "P07": "Price not corroborated",
+    "C01": "Missed dividend", "C02": "Missed stock split", "C03": "Split-like price drop", "C04": "Unexplained quantity change",
+    "F01": "Fee mismatch", "F02": "Performance-fee mismatch", "F03": "Wrong fee day-count",
+    "N01": "NAV outside expected range", "N02": "Differs from administrator", "N03": "Large administrator break",
+    "N04": "Unexplained NAV move", "R02": "Ready to publish"}
+LABEL_PLAIN = {
+    "STALE_PRICE": "Stale price", "FAT_FINGER": "Fat-finger price", "SOURCE_VARIANCE": "Sources disagree",
+    "MISSING_PRICE": "Missing price", "UNPROCESSED_DIVIDEND": "Missed dividend", "UNPROCESSED_SPLIT": "Missed stock split",
+    "FEE_ERROR": "Fee error", "GENUINE_MARKET_MOVE": "Genuine market move", "BENIGN_NOISE": "No issue (noise)",
+    "UNEXPLAINED": "Unexplained", "NO_AI": "No AI view", "RELEASE_MEMO": "Release memo"}
+CASE_STATUS_PLAIN = {"NEW": "New", "AI_DONE": "Ready for review", "PENDING_CHECK": "Awaiting 2nd approval",
+                     "ESCALATED": "Escalated", "CLOSED": "Closed"}
+FUND_STATUS_PLAIN = {"RELEASED": "Published", "READY": "Ready to publish", "IN_REVIEW": "Under review", "BLOCKED": "Blocked"}
+
+
+def plain_rule(r):
+    return RULE_PLAIN.get(str(r), str(r))
+
+
+def plain_label(lbl):
+    s = str(lbl or "")
+    return LABEL_PLAIN.get(s, s.replace("_", " ").title() if s else "—")
 FUND_STATUS_COLOR = {"RELEASED": "#15803d", "READY": "#16a34a", "IN_REVIEW": "#d97706", "BLOCKED": "#dc2626"}
 CASE_STATUS_COLOR = {"NEW": "#64748b", "AI_DONE": "#2563eb", "PENDING_CHECK": "#7c3aed", "ESCALATED": "#ea580c", "CLOSED": "#15803d"}
 SERIES_COLORS = ["#2563eb", "#16a34a", "#d97706", "#9333ea", "#dc2626", "#0891b2"]
@@ -74,6 +98,25 @@ st.markdown("""
 .fund .fn {font-size: .75rem; opacity: .7;} .fund .nav {font-size: 1.25rem; font-weight: 700;} .fund .meta {font-size: .74rem; opacity: .8;}
 .steps {display: flex; gap: 8px; flex-wrap: wrap;} .step {flex: 1 1 150px; border-radius: 10px; padding: 8px 10px; background: rgba(127,127,127,.07);}
 .step .t {font-weight: 700; font-size: .8rem;} .step .d {font-size: .72rem; opacity: .8;}
+.brand {display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;
+        padding:10px 16px; margin-bottom:12px; border-radius:12px;
+        background:linear-gradient(90deg, rgba(59,130,246,.22), rgba(124,58,237,.12)); border:1px solid rgba(127,127,127,.2);}
+.brand .bl {display:flex; align-items:center; gap:12px;}
+.brand .logo {font-size:1.6rem; color:#60a5fa;}
+.brand .bt {font-size:1.25rem; font-weight:800; letter-spacing:.02em;}
+.brand .bs {font-size:.78rem; opacity:.75;}
+.brand .br {display:flex; gap:14px; align-items:center; font-size:.82rem; flex-wrap:wrap;}
+.exec-hero {padding:14px 18px; border-radius:12px; background:rgba(127,127,127,.08); margin-bottom:12px;}
+.exec-hero .eh-l {font-size:.75rem; text-transform:uppercase; letter-spacing:.06em; opacity:.7;}
+.exec-hero .eh-m {font-size:1.6rem; font-weight:800; margin-top:2px;}
+.flow {display:flex; gap:0; margin:6px 0 14px 0;}
+.flow .fs {flex:1; padding:10px 12px; border-top:4px solid #475569; background:rgba(127,127,127,.06); position:relative;}
+.flow .fs.ok {border-top-color:#16a34a;} .flow .fs.pend {border-top-color:#d97706;}
+.flow .ft {font-size:1.15rem; font-weight:800;} .flow .fn {font-size:.82rem; font-weight:700;} .flow .fd {font-size:.72rem; opacity:.75;}
+table.xt {width:100%; border-collapse:collapse; font-size:.88rem;}
+table.xt th {text-align:left; font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; opacity:.7; padding:6px 8px;
+             border-bottom:1px solid rgba(127,127,127,.3);}
+table.xt td {padding:8px; border-bottom:1px solid rgba(127,127,127,.15);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -457,7 +500,7 @@ def evidence_panel(c, f):
         rc = T("Rule_Catalogue")
         names = dict(zip(rc["Rule_ID"], rc["Rule_Name"])) if not rc.empty else {}
         show = f[[x for x in ["Rule_ID", "Severity", "Fund_ID", "Source", "Observed_Value", "Threshold_Value", "Est_NAV_Impact_bps"] if x in f.columns]].copy()
-        show.insert(1, "Rule", show["Rule_ID"].map(names))
+        show.insert(1, "Check", show["Rule_ID"].map(plain_rule))
         st.markdown("**Why it was flagged**")
         st.dataframe(rule_hits_display(show), hide_index=True, use_container_width=True)
     if sec and sec != "ALL":
@@ -519,7 +562,7 @@ def ai_panel(ai):
     bcol = {"HIGH": "#16a34a", "MEDIUM": "#d97706", "LOW": "#dc2626"}.get(band, "#64748b")
     conf = num(ai.get("Confidence")) or 0
     c1, c2, c3 = st.columns(3)
-    c1.markdown(f'<div class="kpi"><div class="l">Classification</div><div class="v" style="font-size:1.1rem">{ai.get("Classification")}</div>'
+    c1.markdown(f'<div class="kpi"><div class="l">Classification</div><div class="v" style="font-size:1.1rem">{plain_label(ai.get("Classification"))}</div>'
                 f'<div class="s">is_error = {ai.get("Is_Error")}</div></div>', unsafe_allow_html=True)
     c2.markdown(f'<div class="kpi"><div class="l">Recommended action</div><div class="v" style="font-size:1.1rem">{ai.get("Recommended_Action")}</div>'
                 f'<div class="s">source {ai.get("Recommended_Source", "—")} · impact {ai.get("AI_Impact_bps", "—")} bps</div></div>', unsafe_allow_html=True)
@@ -705,9 +748,9 @@ def render_case(cid):
     rules = sorted(set(f["Rule_ID"].astype(str))) if not f.empty else []
     ai = ai_rows().get(str(c.get("Latest_AI_Call_ID")), {})
     sev = str(c.get("Max_Severity", ""))
-    st.markdown(f'<div class="card"><b style="font-size:1.1rem">{cid}</b> &nbsp; {chip(status, CASE_STATUS_COLOR.get(status, "#64748b"))} '
+    st.markdown(f'<div class="card"><b style="font-size:1.1rem">{cid}</b> &nbsp; {chip(CASE_STATUS_PLAIN.get(status, status), CASE_STATUS_COLOR.get(status, "#64748b"))} '
                 f'{chip(sev, "#dc2626" if sev == "HARD" else "#d97706")} &nbsp; {c.get("Date")} · {c.get("Level")} · funds '
-                f'{c.get("Fund_IDs")} · security {c.get("Security_ID")} · root rule {c.get("Root_Rule_ID")} · '
+                f'{c.get("Fund_IDs")} · security {c.get("Security_ID")} · issue <b>{plain_rule(c.get("Root_Rule_ID"))}</b> · '
                 f'est. impact {c.get("Est_NAV_Impact_bps")} bps · age {age_text(c.get("Created_At"))}</div>', unsafe_allow_html=True)
     t1, t2, t3, t4 = st.tabs(["🔎 Evidence", "🤖 AI recommendation", "✍️ Decision", "🕘 History"])
     with t1:
@@ -817,7 +860,7 @@ def control_matrix(day, exc):
         rb = None if res is None or not prev else res / prev * 10000
         cells.append((3, "n/a") if rb is None else ((2 if truthy(r.get("N04")) else 0), f"{rb:+.1f} bps"))
         s = str(r.get("Fund_Day_Status", "")).upper()
-        cells.append({"RELEASED": (0, "Released"), "READY": (1, "Ready"), "IN_REVIEW": (2, "In review"), "BLOCKED": (3, "Blocked")}.get(s, (2, s or "—")))
+        cells.append({"RELEASED": (0, "Published"), "READY": (1, "Ready to publish"), "IN_REVIEW": (2, "Under review"), "BLOCKED": (3, "Blocked")}.get(s, (2, s or "—")))
         z.append([c[0] for c in cells])
         txt.append([c[1] for c in cells])
     fig = go.Figure(go.Heatmap(z=z, x=controls, y=list(day["Fund_ID"]), text=txt, texttemplate="%{text}", zmin=0, zmax=3,
@@ -925,7 +968,7 @@ def nav_board(day):
             f'<div class="l">{r["Fund_ID"]} · {str(r.get("Fund_Name", ""))[:30]}</div>'
             f'<div class="v">{nav_text(r.get("NAV_1e4"))}</div>'
             f'<div class="s">{chg}</div>'
-            f'<div class="s">Net assets {aum} · {chip(s or "—", colr)}</div>'
+            f'<div class="s">Net assets {aum} · {chip(FUND_STATUS_PLAIN.get(s, s or "—"), colr)}</div>'
             f'<div class="s">Expected {nav_text(r.get("Expected_NAV_1e4"))} · Admin {nav_text(r.get("Admin_NAV_1e4"))}{cap_txt}</div>'
             f'</div>', unsafe_allow_html=True)
 
@@ -1051,13 +1094,16 @@ def page_cases():
             st.info("No cases match these filters.")
         else:
             q = with_ai_columns(q)
+            q["Issue"] = q["Root_Rule_ID"].map(plain_rule)
+            q["AI view"] = q["AI_Class"].map(plain_label)
+            q["State"] = q["Status"].map(lambda s: CASE_STATUS_PLAIN.get(str(s), str(s)))
             q["●"] = q.apply(case_icon, axis=1)
             q["Impact"] = numcol(q, "Est_NAV_Impact_bps")
             q["AI conf"] = pd.to_numeric(q["AI_Conf"], errors="coerce")
             q["_hard_first"] = (q["Max_Severity"] != "HARD").astype(int)
             q = q.sort_values(["_hard_first", "Impact"], ascending=[True, False]).reset_index(drop=True)
             cols = ["●", "Case_ID"] + (["Date"] if scope == "All dates" else []) + \
-                   ["Root_Rule_ID", "Fund_IDs", "Security_ID", "Impact", "AI_Class", "AI conf", "Status"]
+                   ["Issue", "Fund_IDs", "Security_ID", "Impact", "AI view", "AI conf", "State"]
             ev = st.dataframe(
                 q[cols], hide_index=True, use_container_width=True, height=560, on_select="rerun",
                 selection_mode="single-row", key="wb_tbl",
@@ -1457,6 +1503,115 @@ def page_audit():
     st.dataframe(v, hide_index=True, use_container_width=True, height=560)
     st.download_button("Download as CSV", v.to_csv(index=False).encode(), file_name=f"navcr_audit_{env_key}.csv", mime="text/csv")
 
+# ---------------------------------------------------------------------------- branding + executive summary
+def brand_header():
+    u = me()
+    who_txt = (u["name"] or u["email"]) if u else "Not signed in"
+    env_col = "#16a34a" if ENV_MODE == "live" else "#7c3aed"
+    st.markdown(
+        f'<div class="brand"><div class="bl"><span class="logo">◆</span><div>'
+        f'<div class="bt">NAV Control Room</div><div class="bs">Daily NAV assurance · a correct NAV, on time, every day</div></div></div>'
+        f'<div class="br">{chip(ENV.get("label", env_key), env_col)}<span>NAV date <b>{SEL_DATE or "—"}</b></span>'
+        f'<span>👤 {who_txt}</span></div></div>', unsafe_allow_html=True)
+
+
+def stage_time(ts):
+    try:
+        return pd.Timestamp(ts).strftime("%H:%M")
+    except Exception:
+        return "—"
+
+
+def page_executive():
+    flash()
+    nav, funds, cases = T("NAV_Runs"), T("Funds"), T("Cases")
+    rl, rv, rel = T("Run_Log"), T("Reviews"), T("Release_Log")
+    day = nav[nav["Date"] == SEL_DATE].copy() if (not nav.empty and SEL_DATE) else pd.DataFrame()
+    if day.empty:
+        st.info("No NAV data for the selected date.")
+        return
+    if not funds.empty:
+        day = day.merge(funds[["Fund_ID", "Fund_Name"]], on="Fund_ID", how="left")
+    day = day.sort_values("Fund_ID")
+    cday = cases[cases["Date"] == SEL_DATE] if not cases.empty else cases
+    exc = cday[cday["Case_Type"] == "EXCEPTION"] if not cday.empty else cday
+    status = day["Fund_Day_Status"].astype(str).str.upper()
+    published = int((status == "RELEASED").sum())
+    open_exc = int((exc["Status"] != "CLOSED").sum()) if not exc.empty else 0
+    critical = int(((exc["Status"] != "CLOSED") & (exc["Max_Severity"] == "HARD")).sum()) if not exc.empty else 0
+    pending = int((cday["Status"] == "PENDING_CHECK").sum()) if not cday.empty else 0
+    closed = int((exc["Status"] == "CLOSED").sum()) if not exc.empty else 0
+
+    now = datetime.now(IST)
+    if SEL_DATE == now.strftime("%Y-%m-%d"):
+        secs = (now.replace(hour=23, minute=0, second=0, microsecond=0) - now).total_seconds()
+        dl, dl_sub = (f"{int(secs // 3600)}h {int(secs % 3600 // 60)}m", "to the 11:00 PM deadline") if secs > 0 else ("Passed", "11:00 PM deadline")
+    else:
+        dl, dl_sub = "—", "historical date"
+
+    if published == len(day):
+        msg, col = f"All {len(day)} funds published.", "#16a34a"
+    elif critical:
+        msg, col = f"{critical} critical issue(s) are blocking publication.", "#dc2626"
+    elif open_exc or pending:
+        msg, col = f"{open_exc} issue(s) under review · {pending} awaiting second approval.", "#d97706"
+    else:
+        msg, col = f"{len(day) - published} fund(s) checked and ready to publish.", "#2563eb"
+    st.markdown(f'<div class="exec-hero" style="border-left:8px solid {col}"><div class="eh-l">Today on the NAV desk · {SEL_DATE}</div>'
+                f'<div class="eh-m">{msg}</div></div>', unsafe_allow_html=True)
+    tiles([("Funds published", f"{published}/{len(day)}", "released after two approvals", "#16a34a"),
+           ("Issues caught today", len(exc), f"{critical} critical · {open_exc} still open", "#d97706"),
+           ("Awaiting second approval", pending, "proposals for a senior to confirm", "#7c3aed"),
+           ("Time to deadline", dl, dl_sub, "#3b82f6")])
+
+    # how today's NAV process ran
+    pipe = rl[(rl["Date"] == SEL_DATE) & (rl["Step"] == "FULL_PIPELINE")] if not rl.empty else rl
+    t_in = stage_time(pipe["Start_Time"].min()) if not pipe.empty else "—"
+    t_chk = stage_time(pipe["End_Time"].max()) if not pipe.empty else "—"
+    ids = set(cday["Case_ID"]) if not cday.empty else set()
+    rvd = rv[rv["Case_ID"].isin(ids) & rv["Valid"].apply(truthy)] if not rv.empty else rv
+    t_rev = stage_time(rvd["Timestamp"].max()) if not rvd.empty else "—"
+    reld = rel[rel["Date"] == SEL_DATE] if not rel.empty else rel
+    t_pub = stage_time(reld["Approved_At"].max()) if not reld.empty else "—"
+    stages = [("Market close", "15:30", "NSE closing prices", True),
+              ("Data received", t_in, "3 price sources, corporate actions, fees", t_in != "—"),
+              ("Checks complete", t_chk, f"{len(exc)} issue(s) found automatically", t_chk != "—"),
+              ("Human review", t_rev, f"{closed}/{len(exc)} issues closed by maker + checker", len(exc) == 0 or closed == len(exc)),
+              ("Published", t_pub, f"{published}/{len(day)} funds released", published == len(day))]
+    st.markdown("**How today's NAV process ran**")
+    st.markdown('<div class="flow">' + "".join(
+        f'<div class="fs {"ok" if done else "pend"}"><div class="ft">{t}</div><div class="fn">{n}</div><div class="fd">{d}</div></div>'
+        for n, t, d, done in stages) + "</div>", unsafe_allow_html=True)
+    st.caption("Times show when each step ran (IST).")
+
+    c1, c2 = st.columns([6, 4])
+    with c1:
+        st.markdown("**Fund status**")
+        rows = ""
+        for _, r in day.iterrows():
+            s = str(r.get("Fund_Day_Status", "")).upper()
+            colr = FUND_STATUS_COLOR.get(s, "#64748b")
+            n_iss = int(exc["Fund_IDs"].astype(str).str.split(",").apply(lambda x: r["Fund_ID"] in x).sum()) if not exc.empty else 0
+            chg = num(r.get("NAV_Change_bps"))
+            chg_txt = "—" if chg is None else f'<span style="color:{"#16a34a" if chg >= 0 else "#dc2626"}">{chg / 100:+.2f}%</span>'
+            rows += (f'<tr><td><b>{r["Fund_ID"]}</b> · {r.get("Fund_Name", "")}</td><td>{nav_text(r.get("NAV_1e4"))}</td>'
+                     f'<td>{chg_txt}</td><td>{n_iss}</td><td>{chip(FUND_STATUS_PLAIN.get(s, s or "—"), colr)}</td></tr>')
+        st.markdown('<table class="xt"><tr><th>Fund</th><th>NAV per unit</th><th>Day change</th><th>Issues</th><th>Status</th></tr>'
+                    + rows + "</table>", unsafe_allow_html=True)
+    with c2:
+        allx = cases[cases["Case_Type"] == "EXCEPTION"] if not cases.empty else cases
+        if not allx.empty:
+            vc = allx["Root_Rule_ID"].map(plain_rule).value_counts().head(8).sort_values()
+            fig = go.Figure(go.Bar(x=vc.values, y=vc.index, orientation="h", marker_color="#60a5fa",
+                                   text=vc.values, textposition="outside"))
+            st.plotly_chart(style(fig, 300, "Issues caught so far, by type"), use_container_width=True, config={"displayModeBar": False})
+        rf = T("RealFund_NAV")
+        if not rf.empty:
+            td = numcol(rf[rf["Status"].isin(["MATCH", "BREAK"])], "Tracking_Diff_bps").abs()
+            if td.notna().any():
+                st.markdown(f'<div class="card">🏛️ <b>Real-fund check:</b> our recomputed NAV for UTI Nifty 50 Index Fund '
+                            f'differs from the official AMFI NAV by <b>{td.mean():.1f} bps on average</b> over {td.notna().sum()} days.</div>',
+                            unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------- navigation
 pg = st.navigation({
