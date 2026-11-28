@@ -467,7 +467,7 @@ def mini_waterfall(r, height=300):
     p, c = prev / 10000, cur / 10000
     m, inc, fee, res = (x / 10000 for x in comps)
     fig = go.Figure(go.Waterfall(measure=["absolute", "relative", "relative", "relative", "relative", "total"],
-                                 x=["Previous", "Market", "Income", "Fees", "Unexplained", "Today"], y=[p, m, inc, fee, res, c],
+                                 x=["Yesterday's NAV", "Market move", "Dividends", "Fees", "Unexplained", "Today's NAV"], y=[p, m, inc, fee, res, c],
                                  text=[f"₹{p:.4f}", f"{m:+.4f}", f"{inc:+.4f}", f"{fee:+.4f}", f"{res:+.4f}", f"₹{c:.4f}"],
                                  textposition="outside", increasing={"marker": {"color": "#16a34a"}},
                                  decreasing={"marker": {"color": "#dc2626"}}, totals={"marker": {"color": "#2563eb"}}))
@@ -1024,6 +1024,10 @@ def control_tower_body():
         c1.plotly_chart(deviation_chart(day), use_container_width=True, config={"displayModeBar": False})
         c2.markdown("**NAV trend** · last 20 days, rebased to 100")
         c2.plotly_chart(style(trend_chart(nav), 320), use_container_width=True, config={"displayModeBar": False})
+        st.markdown("**Why did the NAV move?** · yesterday's NAV to today's, by driver")
+        f_sel = st.selectbox("Fund", list(day["Fund_ID"]), key="ct_wf_fund",
+                             format_func=lambda f: f"{f} · {dict(zip(day['Fund_ID'], day.get('Fund_Name', day['Fund_ID'])))[f]}")
+        mini_waterfall(day[day["Fund_ID"] == f_sel].iloc[0], height=360)
 
     # ---- 3. Workflow: pipeline, case status, AI coverage
     elif view == CT_VIEWS[2]:
